@@ -149,6 +149,9 @@ pub struct BindgenContext<'ctx> {
 
     /// Whether a bindgen complex was generated
     generated_bindegen_complex: Cell<bool>,
+
+    /// Counter for making our generated names for anonymous named types unique.
+    anon_named_type_counter: usize,
 }
 
 impl<'ctx> BindgenContext<'ctx> {
@@ -186,6 +189,7 @@ impl<'ctx> BindgenContext<'ctx> {
             translation_unit: translation_unit,
             options: options,
             generated_bindegen_complex: Cell::new(false),
+            anon_named_type_counter: 0,
         };
 
         me.add_item(root_module, None, None);
@@ -1300,6 +1304,33 @@ impl<'ctx> BindgenContext<'ctx> {
     /// Whether we need to generate the binden complex type
     pub fn need_bindegen_complex_type(&self) -> bool {
         self.generated_bindegen_complex.get()
+    }
+
+    /// We must generate a unique name for unnamed template parameters.
+    ///
+    /// For example:
+    ///
+    /// ```c++
+    /// template <typename> Foo { int x; };
+    /// ```
+    ///
+    /// Must become something like this:
+    ///
+    /// ```ignore
+    /// struct Foo<__anon_named_type_36> {
+    ///     x: std::os::raw::c_int,
+    ///     _phantom_0: PhantomData<__anon_named_type_36>,
+    /// }
+    /// ```
+    ///
+    /// Ideally, this counter would only be locally unique within an Item's
+    /// direct siblings, parent, and children. However, we currently construct
+    /// these names at parse time, before each item has a local ID, and it isn't
+    /// clear that the extant local ID is unique enough for this purpose.
+    pub fn allocate_anon_named_type_id(&mut self) -> usize {
+        let id = self.anon_named_type_counter;
+        self.anon_named_type_counter += 1;
+        id
     }
 }
 

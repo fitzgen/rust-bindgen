@@ -897,12 +897,6 @@ impl Type {
                                                           ctx);
                                     }
                                     CXCursor_TemplateTypeParameter => {
-                                        // See the comment in src/ir/comp.rs
-                                        // about the same situation.
-                                        if cur.spelling().is_empty() {
-                                            return CXChildVisit_Continue;
-                                        }
-
                                         let param =
                                             Item::named_type(cur.spelling(),
                                                              potential_id,

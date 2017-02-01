@@ -7,20 +7,17 @@
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct JS_PersistentRooted<c> {
-    pub _base: a,
+    pub _base: a<__anon_named_type_0>,
     pub _phantom_0: ::std::marker::PhantomData<c>,
 }
 impl <c> Default for JS_PersistentRooted<c> {
     fn default() -> Self { unsafe { ::std::mem::zeroed() } }
 }
 #[repr(C)]
-#[derive(Debug, Copy)]
-pub struct a {
-    pub b: *mut a,
+#[derive(Debug, Copy, Clone)]
+pub struct a<__anon_named_type_0> {
+    pub b: *mut a<__anon_named_type_0>,
 }
-impl Clone for a {
-    fn clone(&self) -> Self { *self }
-}
-impl Default for a {
+impl <__anon_named_type_0> Default for a<__anon_named_type_0> {
     fn default() -> Self { unsafe { ::std::mem::zeroed() } }
 }

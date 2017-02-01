@@ -14,10 +14,12 @@ impl <_CharT> Default for std_char_traits<_CharT> {
     fn default() -> Self { unsafe { ::std::mem::zeroed() } }
 }
 #[repr(C)]
-#[derive(Debug, Default, Copy)]
-pub struct __gnu_cxx_char_traits {
+#[derive(Debug, Copy, Clone)]
+pub struct __gnu_cxx_char_traits<__anon_named_type_0> {
     pub _address: u8,
+    pub _phantom_0: ::std::marker::PhantomData<__anon_named_type_0>,
 }
-impl Clone for __gnu_cxx_char_traits {
-    fn clone(&self) -> Self { *self }
+impl <__anon_named_type_0> Default for
+ __gnu_cxx_char_traits<__anon_named_type_0> {
+    fn default() -> Self { unsafe { ::std::mem::zeroed() } }
 }

@@ -1300,9 +1300,14 @@ impl ClangItemParser for Item {
                              -> ItemId
         where S: Into<String>,
     {
-        // see tests/headers/const_tparam.hpp
-        // and tests/headers/variadic_tname.hpp
-        let name = name.into().replace("const ", "").replace(".", "");
+        let name = name.into();
+        let name = if name.is_empty() {
+            format!("__anon_named_type_{}", ctx.allocate_anon_named_type_id())
+        } else {
+            // see tests/headers/const_tparam.hpp
+            // and tests/headers/variadic_tname.hpp
+            name.replace("const ", "").replace(".", "")
+        };
 
         ctx.add_item(Item::new(id,
                                None,
