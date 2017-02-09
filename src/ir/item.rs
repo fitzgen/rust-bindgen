@@ -903,22 +903,22 @@ impl Item {
 }
 
 impl TemplateDeclaration for ItemId {
-    fn template_params(&self, ctx: &BindgenContext) -> Option<Vec<ItemId>> {
+    fn self_template_params(&self, ctx: &BindgenContext) -> Option<Vec<ItemId>> {
         ctx.resolve_item_fallible(*self)
-            .and_then(|item| item.template_params(ctx))
+            .and_then(|item| item.self_template_params(ctx))
     }
 }
 
 impl TemplateDeclaration for Item {
-    fn template_params(&self, ctx: &BindgenContext) -> Option<Vec<ItemId>> {
-        self.kind.template_params(ctx)
+    fn self_template_params(&self, ctx: &BindgenContext) -> Option<Vec<ItemId>> {
+        self.kind.self_template_params(ctx)
     }
 }
 
 impl TemplateDeclaration for ItemKind {
-    fn template_params(&self, ctx: &BindgenContext) -> Option<Vec<ItemId>> {
+    fn self_template_params(&self, ctx: &BindgenContext) -> Option<Vec<ItemId>> {
         match *self {
-            ItemKind::Type(ref ty) => ty.template_params(ctx),
+            ItemKind::Type(ref ty) => ty.self_template_params(ctx),
             // TODO FITZGEN: shouldn't functions be able to have free template
             // params?
             ItemKind::Module(_) |
