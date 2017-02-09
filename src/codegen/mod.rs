@@ -17,7 +17,7 @@ use ir::item_kind::ItemKind;
 use ir::layout::Layout;
 use ir::module::Module;
 use ir::objc::ObjCInterface;
-use ir::ty::{Type, TypeKind};
+use ir::ty::{TemplateDeclaration, Type, TypeKind};
 use ir::type_collector::ItemSet;
 use ir::var::Var;
 
@@ -556,10 +556,9 @@ impl CodeGenerator for Type {
                     return;
                 }
 
-                let mut applicable_template_args =
-                    item.applicable_template_args(ctx);
+                let mut template_params = item.all_template_params(ctx);
                 let inner_rust_type = if item.is_opaque(ctx) {
-                    applicable_template_args.clear();
+                    template_params = None;
                     // Pray if there's no layout.
                     let layout = self.layout(ctx).unwrap_or_else(Layout::zero);
                     BlobTyBuilder::new(layout).build()
@@ -602,7 +601,7 @@ impl CodeGenerator for Type {
                 // https://github.com/rust-lang/rust/issues/26264
                 let simple_enum_path = match inner_rust_type.node {
                     ast::TyKind::Path(None, ref p) => {
-                        if applicable_template_args.is_empty() &&
+                        if template_params.is_none() &&
                            inner_item.expect_type()
                             .canonical_type(ctx)
                             .is_enum() &&
@@ -626,17 +625,19 @@ impl CodeGenerator for Type {
                     typedef.use_().build(p).as_(rust_name)
                 } else {
                     let mut generics = typedef.type_(rust_name).generics();
-                    for template_arg in applicable_template_args.iter() {
-                        let template_arg = ctx.resolve_type(*template_arg);
-                        if template_arg.is_named() {
-                            if template_arg.is_invalid_named_type() {
-                                warn!("Item contained invalid template \
-                                       parameter: {:?}",
-                                      item);
-                                return;
+                    if let Some(template_params) = template_params.as_ref() {
+                        for id in template_params {
+                            let template_param = ctx.resolve_type(*id);
+                            if template_param.is_named() {
+                                if template_param.is_invalid_named_type() {
+                                    warn!("Item contained invalid template \
+                                           parameter: {:?}",
+                                          item);
+                                    return;
+                                }
+                                generics =
+                                    generics.ty_param_id(template_param.name().unwrap());
                             }
-                            generics =
-                                generics.ty_param_id(template_arg.name().unwrap());
                         }
                     }
                     generics.build().build_ty(inner_rust_type)
@@ -836,12 +837,12 @@ impl CodeGenerator for CompInfo {
             return;
         }
 
-        let applicable_template_args = item.applicable_template_args(ctx);
+        let template_params = item.all_template_params(ctx);
 
         // generate tuple struct if struct or union is a forward declaration,
         // skip for now if template parameters are needed.
         if self.is_forward_declaration() &&
-           applicable_template_args.is_empty() {
+           template_params.is_none() {
             let struct_name = item.canonical_name(ctx);
             let struct_name = ctx.rust_ident_raw(&struct_name);
             let tuple_struct = quote_item!(ctx.ext_cx(),
@@ -912,7 +913,7 @@ impl CodeGenerator for CompInfo {
         if item.can_derive_copy(ctx, ()) &&
            !item.annotations().disallow_copy() {
             derives.push("Copy");
-            if !applicable_template_args.is_empty() {
+            if template_params.is_some() {
                 // FIXME: This requires extra logic if you have a big array in a
                 // templated struct. The reason for this is that the magic:
                 //     fn clone(&self) -> Self { *self }
@@ -1272,31 +1273,33 @@ impl CodeGenerator for CompInfo {
             fields.push(field);
         }
 
-        // Append any extra template arguments that nobody has used so far.
-        for (i, ty) in applicable_template_args.iter().enumerate() {
-            let name = ctx.resolve_type(*ty).name().unwrap();
-            let ident = ctx.rust_ident(name);
-            let prefix = ctx.trait_prefix();
-            let phantom = quote_ty!(ctx.ext_cx(),
-                                    ::$prefix::marker::PhantomData<$ident>);
-            let field = StructFieldBuilder::named(format!("_phantom_{}",
-                                                          i))
-                .pub_()
-                .build_ty(phantom);
-            fields.push(field)
-        }
-
-
         let mut generics = aster::AstBuilder::new().generics();
-        for template_arg in applicable_template_args.iter() {
-            // Take into account that here only arrive named types, not
-            // template specialisations that would need to be
-            // instantiated.
-            //
-            // TODO: Add template args from the parent, here and in
-            // `to_rust_ty`!!
-            let template_arg = ctx.resolve_type(*template_arg);
-            generics = generics.ty_param_id(template_arg.name().unwrap());
+
+        // Append PhantomData<T> for all generic T template parameters. Keeping
+        // track of which ones are unused is too hard to do correctly for all
+        // edge cases.
+        if let Some(template_params) = template_params.as_ref() {
+            for (i, id) in template_params.iter().enumerate() {
+                let template_param = ctx.resolve_type(*id);
+                let name = template_param.name().unwrap();
+                let ident = ctx.rust_ident(name);
+                let prefix = ctx.trait_prefix();
+                let phantom = quote_ty!(ctx.ext_cx(),
+                                        ::$prefix::marker::PhantomData<$ident>);
+                let field = StructFieldBuilder::named(format!("_phantom_{}",
+                                                              i))
+                    .pub_()
+                    .build_ty(phantom);
+                fields.push(field);
+
+                // Take into account that here only arrive named types, not
+                // template specialisations that would need to be
+                // instantiated.
+                //
+                // TODO: Add template args from the parent, here and in
+                // `to_rust_ty`!!
+                generics = generics.ty_param_id(template_param.name().unwrap());
+            }
         }
 
         let generics = generics.build();
@@ -1324,7 +1327,7 @@ impl CodeGenerator for CompInfo {
                   canonical_name);
         }
 
-        if applicable_template_args.is_empty() {
+        if template_params.is_none() {
             for var in self.inner_vars() {
                 ctx.resolve_item(*var)
                     .codegen(ctx, result, whitelisted_items, &());
@@ -2188,13 +2191,15 @@ impl ToRustTy for Type {
             TypeKind::ResolvedTypeRef(inner) => inner.to_rust_ty(ctx),
             TypeKind::TemplateAlias(inner, _) |
             TypeKind::Alias(inner) => {
-                let applicable_named_args = item.applicable_template_args(ctx)
-                    .into_iter()
-                    .filter(|arg| ctx.resolve_type(*arg).is_named())
-                    .collect::<Vec<_>>();
+                let template_params = item.all_template_params(ctx)
+                    .map(|params| {
+                        params.into_iter()
+                            .filter(|param| ctx.resolve_type(*param).is_named())
+                            .collect::<Vec<_>>()
+                    });
 
                 let spelling = self.name().expect("Unnamed alias?");
-                if item.is_opaque(ctx) && !applicable_named_args.is_empty() {
+                if item.is_opaque(ctx) && template_params.is_some() {
                     // Pray if there's no available layout.
                     let layout = self.layout(ctx).unwrap_or_else(Layout::zero);
                     BlobTyBuilder::new(layout).build()
@@ -2205,13 +2210,13 @@ impl ToRustTy for Type {
                 } else {
                     utils::build_templated_path(item,
                                                 ctx,
-                                                applicable_named_args)
+                                                template_params.unwrap_or(vec![]))
                 }
             }
             TypeKind::Comp(ref info) => {
-                let template_args = item.applicable_template_args(ctx);
+                let template_params = item.all_template_params(ctx);
                 if info.has_non_type_template_params() ||
-                   (item.is_opaque(ctx) && !template_args.is_empty()) {
+                   (item.is_opaque(ctx) && template_params.is_some()) {
                     return match self.layout(ctx) {
                         Some(layout) => BlobTyBuilder::new(layout).build(),
                         None => {
@@ -2223,7 +2228,7 @@ impl ToRustTy for Type {
                     };
                 }
 
-                utils::build_templated_path(item, ctx, template_args)
+                utils::build_templated_path(item, ctx, template_params.unwrap_or(vec![]))
             }
             TypeKind::BlockPointer => {
                 let void = raw_type(ctx, "c_void");

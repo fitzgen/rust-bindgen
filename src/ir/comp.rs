@@ -1042,7 +1042,7 @@ impl<'a> CanDeriveCopy<'a> for CompInfo {
 
             // https://github.com/rust-lang/rust/issues/36640
             if !self.template_args.is_empty() || self.ref_template.is_some() ||
-               !item.applicable_template_args(ctx).is_empty() {
+               item.all_template_params(ctx).is_some() {
                 return false;
             }
         }
@@ -1077,9 +1077,8 @@ impl TypeCollector for CompInfo {
             types.insert(template);
         }
 
-        let applicable_template_args = item.applicable_template_args(context);
-        for arg in applicable_template_args {
-            types.insert(arg);
+        if let Some(params) = item.all_template_params(context) {
+            types.extend(params);
         }
 
         for base in self.base_members() {
