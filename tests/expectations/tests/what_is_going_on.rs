@@ -26,6 +26,7 @@ pub struct PointTyped<units, F> {
     pub x: F,
     pub y: F,
     pub _phantom_0: ::std::marker::PhantomData<units>,
+    pub _phantom_1: ::std::marker::PhantomData<F>,
 }
 impl <units, F> Default for PointTyped<units, F> {
     fn default() -> Self { unsafe { ::std::mem::zeroed() } }

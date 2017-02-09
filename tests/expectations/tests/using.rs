@@ -9,6 +9,7 @@
 pub struct Point<T> {
     pub x: T,
     pub y: T,
+    pub _phantom_0: ::std::marker::PhantomData<T>,
 }
 impl <T> Default for Point<T> {
     fn default() -> Self { unsafe { ::std::mem::zeroed() } }

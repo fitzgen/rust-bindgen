@@ -11,6 +11,7 @@ pub struct Foo([u8; 0]);
 #[derive(Debug, Copy, Clone)]
 pub struct RefPtr<T> {
     pub m_inner: *mut T,
+    pub _phantom_0: ::std::marker::PhantomData<T>,
 }
 impl <T> Default for RefPtr<T> {
     fn default() -> Self { unsafe { ::std::mem::zeroed() } }

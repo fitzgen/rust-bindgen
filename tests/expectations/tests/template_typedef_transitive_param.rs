@@ -14,6 +14,7 @@ pub struct Wrapper<T> {
 #[derive(Debug, Copy, Clone)]
 pub struct Wrapper_Wrapped<T> {
     pub t: T,
+    pub _phantom_0: ::std::marker::PhantomData<T>,
 }
 impl <T> Default for Wrapper_Wrapped<T> {
     fn default() -> Self { unsafe { ::std::mem::zeroed() } }

@@ -9,6 +9,7 @@
 pub struct LinkedList<T> {
     pub next: *mut LinkedList<T>,
     pub prev: *mut LinkedList<T>,
+    pub _phantom_0: ::std::marker::PhantomData<T>,
 }
 impl <T> Default for LinkedList<T> {
     fn default() -> Self { unsafe { ::std::mem::zeroed() } }

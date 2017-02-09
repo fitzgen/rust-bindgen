@@ -929,8 +929,6 @@ impl CodeGenerator for CompInfo {
             attributes.push(attributes::derives(&derives))
         }
 
-        let mut template_args_used =
-            vec![false; applicable_template_args.len()];
         let canonical_name = item.canonical_name(ctx);
         let builder = if is_union && ctx.options().unstable_rust {
             aster::AstBuilder::new()
@@ -991,13 +989,6 @@ impl CodeGenerator for CompInfo {
             // unsized types.
             if base_ty.is_unsized(ctx) {
                 continue;
-            }
-
-            for (i, ty_id) in applicable_template_args.iter().enumerate() {
-                let template_arg_ty = ctx.resolve_type(*ty_id);
-                if base_ty.signature_contains_named_type(ctx, template_arg_ty) {
-                    template_args_used[i] = true;
-                }
             }
 
             let inner = base.ty.to_rust_ty(ctx);
@@ -1081,13 +1072,6 @@ impl CodeGenerator for CompInfo {
                 current_bitfield_layout = Some(layout);
                 current_bitfield_fields.push(field);
                 continue;
-            }
-
-            for (i, ty_id) in applicable_template_args.iter().enumerate() {
-                let template_arg = ctx.resolve_type(*ty_id);
-                if field_ty.signature_contains_named_type(ctx, template_arg) {
-                    template_args_used[i] = true;
-                }
             }
 
             let ty = field.ty().to_rust_ty(ctx);
@@ -1249,9 +1233,6 @@ impl CodeGenerator for CompInfo {
         if item.is_opaque(ctx) {
             fields.clear();
             methods.clear();
-            for i in 0..template_args_used.len() {
-                template_args_used[i] = false;
-            }
 
             match layout {
                 Some(l) => {
@@ -1293,18 +1274,16 @@ impl CodeGenerator for CompInfo {
 
         // Append any extra template arguments that nobody has used so far.
         for (i, ty) in applicable_template_args.iter().enumerate() {
-            if !template_args_used[i] {
-                let name = ctx.resolve_type(*ty).name().unwrap();
-                let ident = ctx.rust_ident(name);
-                let prefix = ctx.trait_prefix();
-                let phantom = quote_ty!(ctx.ext_cx(),
-                                        ::$prefix::marker::PhantomData<$ident>);
-                let field = StructFieldBuilder::named(format!("_phantom_{}",
-                                                              i))
-                    .pub_()
-                    .build_ty(phantom);
-                fields.push(field)
-            }
+            let name = ctx.resolve_type(*ty).name().unwrap();
+            let ident = ctx.rust_ident(name);
+            let prefix = ctx.trait_prefix();
+            let phantom = quote_ty!(ctx.ext_cx(),
+                                    ::$prefix::marker::PhantomData<$ident>);
+            let field = StructFieldBuilder::named(format!("_phantom_{}",
+                                                          i))
+                .pub_()
+                .build_ty(phantom);
+            fields.push(field)
         }
 
 

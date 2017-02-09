@@ -712,7 +712,7 @@ impl CompInfo {
 
                     let type_id = Item::from_ty_or_ref(cur.cur_type(),
                                                        Some(cur),
-                                                       None,
+                                                       Some(potential_id),
                                                        ctx);
                     ci.base_members.push(Base {
                         ty: type_id,

@@ -10,6 +10,7 @@ pub struct Foo<T, U> {
     pub m_member: T,
     pub m_member_ptr: *mut T,
     pub m_member_arr: [T; 1usize],
+    pub _phantom_0: ::std::marker::PhantomData<T>,
     pub _phantom_1: ::std::marker::PhantomData<U>,
 }
 impl <T, U> Default for Foo<T, U> {
@@ -32,6 +33,7 @@ pub struct D_U<T, Z> {
     pub m_nested_foo: D_MyFoo,
     pub m_baz: Z,
     pub _phantom_0: ::std::marker::PhantomData<T>,
+    pub _phantom_1: ::std::marker::PhantomData<Z>,
 }
 impl <T, Z> Default for D_U<T, Z> {
     fn default() -> Self { unsafe { ::std::mem::zeroed() } }
@@ -45,6 +47,7 @@ pub struct Rooted<T> {
     pub prev: *mut T,
     pub next: *mut Rooted<*mut ::std::os::raw::c_void>,
     pub ptr: T,
+    pub _phantom_0: ::std::marker::PhantomData<T>,
 }
 impl <T> Default for Rooted<T> {
     fn default() -> Self { unsafe { ::std::mem::zeroed() } }
@@ -76,6 +79,7 @@ impl Default for RootedContainer {
 #[derive(Debug)]
 pub struct WithDtor<T> {
     pub member: T,
+    pub _phantom_0: ::std::marker::PhantomData<T>,
 }
 impl <T> Default for WithDtor<T> {
     fn default() -> Self { unsafe { ::std::mem::zeroed() } }
@@ -137,6 +141,7 @@ impl Clone for POD {
 #[derive(Debug, Copy, Clone)]
 pub struct NestedReplaced<T> {
     pub buff: *mut T,
+    pub _phantom_0: ::std::marker::PhantomData<T>,
 }
 impl <T> Default for NestedReplaced<T> {
     fn default() -> Self { unsafe { ::std::mem::zeroed() } }
@@ -145,6 +150,7 @@ impl <T> Default for NestedReplaced<T> {
 #[derive(Debug, Copy, Clone)]
 pub struct NestedBase<T, U> {
     pub buff: *mut T,
+    pub _phantom_0: ::std::marker::PhantomData<T>,
     pub _phantom_1: ::std::marker::PhantomData<U>,
 }
 impl <T, U> Default for NestedBase<T, U> {
@@ -154,6 +160,7 @@ impl <T, U> Default for NestedBase<T, U> {
 #[derive(Debug, Copy, Clone)]
 pub struct Incomplete<T> {
     pub d: T,
+    pub _phantom_0: ::std::marker::PhantomData<T>,
 }
 impl <T> Default for Incomplete<T> {
     fn default() -> Self { unsafe { ::std::mem::zeroed() } }
@@ -164,6 +171,7 @@ pub struct NestedContainer<T> {
     pub c: T,
     pub nested: NestedReplaced<T>,
     pub inc: Incomplete<T>,
+    pub _phantom_0: ::std::marker::PhantomData<T>,
 }
 impl <T> Default for NestedContainer<T> {
     fn default() -> Self { unsafe { ::std::mem::zeroed() } }
@@ -202,6 +210,7 @@ impl <T> Default for Templated<T> {
 #[derive(Debug)]
 pub struct ReplacedWithoutDestructor<T> {
     pub buff: *mut T,
+    pub _phantom_0: ::std::marker::PhantomData<T>,
 }
 impl <T> Default for ReplacedWithoutDestructor<T> {
     fn default() -> Self { unsafe { ::std::mem::zeroed() } }
@@ -210,6 +219,7 @@ impl <T> Default for ReplacedWithoutDestructor<T> {
 #[derive(Debug)]
 pub struct ShouldNotBeCopiable<T> {
     pub m_member: ReplacedWithoutDestructor<T>,
+    pub _phantom_0: ::std::marker::PhantomData<T>,
 }
 impl <T> Default for ShouldNotBeCopiable<T> {
     fn default() -> Self { unsafe { ::std::mem::zeroed() } }
@@ -218,6 +228,7 @@ impl <T> Default for ShouldNotBeCopiable<T> {
 #[derive(Debug)]
 pub struct ShouldNotBeCopiableAsWell<U> {
     pub m_member: ReplacedWithoutDestructorFwd<U>,
+    pub _phantom_0: ::std::marker::PhantomData<U>,
 }
 impl <U> Default for ShouldNotBeCopiableAsWell<U> {
     fn default() -> Self { unsafe { ::std::mem::zeroed() } }
@@ -232,6 +243,7 @@ impl <U> Default for ShouldNotBeCopiableAsWell<U> {
 #[derive(Debug)]
 pub struct ReplacedWithoutDestructorFwd<T> {
     pub buff: *mut T,
+    pub _phantom_0: ::std::marker::PhantomData<T>,
 }
 impl <T> Default for ReplacedWithoutDestructorFwd<T> {
     fn default() -> Self { unsafe { ::std::mem::zeroed() } }

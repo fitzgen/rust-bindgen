@@ -9,6 +9,7 @@
 pub struct C<T> {
     pub foo: *const T,
     pub bar: *mut T,
+    pub _phantom_0: ::std::marker::PhantomData<T>,
 }
 impl <T> Default for C<T> {
     fn default() -> Self { unsafe { ::std::mem::zeroed() } }

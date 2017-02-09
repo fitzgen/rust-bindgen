@@ -21,6 +21,7 @@ pub mod root {
     #[derive(Debug, Copy, Clone)]
     pub struct Rooted<T> {
         pub c: root::b<T>,
+        pub _phantom_0: ::std::marker::PhantomData<T>,
     }
     impl <T> Default for Rooted<T> {
         fn default() -> Self { unsafe { ::std::mem::zeroed() } }

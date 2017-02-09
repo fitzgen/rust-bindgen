@@ -68,6 +68,7 @@ pub mod root {
         pub m_c: T,
         pub m_c_ptr: *mut T,
         pub m_c_arr: [T; 10usize],
+        pub _phantom_0: ::std::marker::PhantomData<T>,
     }
     impl <T> Default for C<T> {
         fn default() -> Self { unsafe { ::std::mem::zeroed() } }
@@ -80,6 +81,7 @@ pub mod root {
         #[derive(Debug)]
         pub struct D<T> {
             pub m_c: root::C<T>,
+            pub _phantom_0: ::std::marker::PhantomData<T>,
         }
         impl <T> Default for D<T> {
             fn default() -> Self { unsafe { ::std::mem::zeroed() } }

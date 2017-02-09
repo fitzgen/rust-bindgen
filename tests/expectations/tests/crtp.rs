@@ -58,23 +58,3 @@ fn bindgen_test_layout_DerivedFromBaseWithDestructor() {
 impl Default for DerivedFromBaseWithDestructor {
     fn default() -> Self { unsafe { ::std::mem::zeroed() } }
 }
-#[test]
-fn __bindgen_test_layout_template_1() {
-    assert_eq!(::std::mem::size_of::<Base<Derived>>() , 1usize , concat ! (
-               "Size of template specialization: " , stringify ! (
-               Base<Derived> ) ));
-    assert_eq!(::std::mem::align_of::<Base<Derived>>() , 1usize , concat ! (
-               "Alignment of template specialization: " , stringify ! (
-               Base<Derived> ) ));
-}
-#[test]
-fn __bindgen_test_layout_template_2() {
-    assert_eq!(::std::mem::size_of::<BaseWithDestructor<DerivedFromBaseWithDestructor>>()
-               , 1usize , concat ! (
-               "Size of template specialization: " , stringify ! (
-               BaseWithDestructor<DerivedFromBaseWithDestructor> ) ));
-    assert_eq!(::std::mem::align_of::<BaseWithDestructor<DerivedFromBaseWithDestructor>>()
-               , 1usize , concat ! (
-               "Alignment of template specialization: " , stringify ! (
-               BaseWithDestructor<DerivedFromBaseWithDestructor> ) ));
-}

@@ -17,6 +17,7 @@ impl <T> Default for Wohoo<T> {
 #[derive(Debug, Copy, Clone)]
 pub struct Weeee<T> {
     pub _base: T,
+    pub _phantom_0: ::std::marker::PhantomData<T>,
 }
 impl <T> Default for Weeee<T> {
     fn default() -> Self { unsafe { ::std::mem::zeroed() } }
