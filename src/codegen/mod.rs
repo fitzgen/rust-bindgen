@@ -536,113 +536,7 @@ impl CodeGenerator for Type {
             // applicable_template_args.
             TypeKind::TemplateAlias(inner, _) |
             TypeKind::Alias(inner) => {
-                let inner_item = ctx.resolve_item(inner);
-                let name = item.canonical_name(ctx);
-
-                // Try to catch the common pattern:
-                //
-                // typedef struct foo { ... } foo;
-                //
-                // here.
-                //
-                if inner_item.canonical_name(ctx) == name {
-                    return;
-                }
-
-                // If this is a known named type, disallow generating anything
-                // for it too.
-                let spelling = self.name().expect("Unnamed alias?");
-                if utils::type_from_named(ctx, spelling, inner).is_some() {
-                    return;
-                }
-
-                let mut template_params = item.all_template_params(ctx);
-                let inner_rust_type = if item.is_opaque(ctx) {
-                    template_params = None;
-                    // Pray if there's no layout.
-                    let layout = self.layout(ctx).unwrap_or_else(Layout::zero);
-                    BlobTyBuilder::new(layout).build()
-                } else {
-                    inner_item.to_rust_ty(ctx)
-                };
-
-                {
-                    // FIXME(emilio): This is a workaround to avoid generating
-                    // incorrect type aliases because of types that we haven't
-                    // been able to resolve (because, eg, they depend on a
-                    // template parameter).
-                    //
-                    // It's kind of a shame not generating them even when they
-                    // could be referenced, but we already do the same for items
-                    // with invalid template parameters, and at least this way
-                    // they can be replaced, instead of generating plain invalid
-                    // code.
-                    let inner_canon_type = inner_item.expect_type()
-                        .canonical_type(ctx);
-                    if inner_canon_type.is_invalid_named_type() {
-                        warn!("Item contained invalid named type, skipping: \
-                              {:?}, {:?}",
-                              item,
-                              inner_item);
-                        return;
-                    }
-                }
-
-                let rust_name = ctx.rust_ident(&name);
-                let mut typedef = aster::AstBuilder::new().item().pub_();
-
-                if ctx.options().generate_comments {
-                    if let Some(comment) = item.comment() {
-                        typedef = typedef.attr().doc(comment);
-                    }
-                }
-
-                // We prefer using `pub use` over `pub type` because of:
-                // https://github.com/rust-lang/rust/issues/26264
-                let simple_enum_path = match inner_rust_type.node {
-                    ast::TyKind::Path(None, ref p) => {
-                        if template_params.is_none() &&
-                           inner_item.expect_type()
-                            .canonical_type(ctx)
-                            .is_enum() &&
-                           p.segments.iter().all(|p| p.parameters.is_none()) {
-                            Some(p.clone())
-                        } else {
-                            None
-                        }
-                    }
-                    _ => None,
-                };
-
-                let typedef = if let Some(mut p) = simple_enum_path {
-                    for ident in top_level_path(ctx, item).into_iter().rev() {
-                        p.segments.insert(0,
-                                          ast::PathSegment {
-                                              identifier: ident,
-                                              parameters: None,
-                                          });
-                    }
-                    typedef.use_().build(p).as_(rust_name)
-                } else {
-                    let mut generics = typedef.type_(rust_name).generics();
-                    if let Some(template_params) = template_params.as_ref() {
-                        for id in template_params {
-                            let template_param = ctx.resolve_type(*id);
-                            if template_param.is_named() {
-                                if template_param.is_invalid_named_type() {
-                                    warn!("Item contained invalid template \
-                                           parameter: {:?}",
-                                          item);
-                                    return;
-                                }
-                                generics =
-                                    generics.ty_param_id(template_param.name().unwrap());
-                            }
-                        }
-                    }
-                    generics.build().build_ty(inner_rust_type)
-                };
-                result.push(typedef)
+                Alias(inner, item).codegen(ctx, result, whitelisted_items, item)
             }
             TypeKind::Enum(ref ei) => {
                 ei.codegen(ctx, result, whitelisted_items, item)
@@ -654,6 +548,133 @@ impl CodeGenerator for Type {
                 unreachable!("Should have been resolved after parsing {:?}!", u)
             }
         }
+    }
+}
+
+/// An alias for the item with the given ItemId.
+struct Alias(ItemId);
+
+impl CodeGenerator for Alias {
+    /// The Item that is a Type of kind TemplateAlias or TypeAlias which aliases
+    /// our self.0.
+    type Extra = Item;
+
+    fn codegen<'a>(&self,
+                   ctx: &BindgenContext,
+                   result: &mut CodegenResult<'a>,
+                   whitelisted_items: &ItemSet,
+                   item: &Item) {
+        debug!("<Type as CodeGenerator>::codegen: item = {:?}", item);
+        let inner_item = ctx.resolve_item(self.0);
+        let name = item.canonical_name(ctx);
+
+        // Try to catch the common pattern:
+        //
+        // typedef struct foo { ... } foo;
+        //
+        // here.
+        //
+        if inner_item.canonical_name(ctx) == name {
+            return;
+        }
+
+        // If this is a known named type, disallow generating anything
+        // for it too.
+        let spelling = self.name().expect("Unnamed alias?");
+        if utils::type_from_named(ctx, spelling, self.0).is_some() {
+            return;
+        }
+
+        let mut template_params = item.all_template_params(ctx);
+        let inner_rust_type = if item.is_opaque(ctx) {
+            template_params = None;
+            // Pray if there's no layout.
+            let layout = self.layout(ctx).unwrap_or_else(Layout::zero);
+            BlobTyBuilder::new(layout).build()
+        } else {
+            match inner_item {
+            }
+            // inner_item.to_rust_ty(ctx)
+        };
+
+        {
+            // FIXME(emilio): This is a workaround to avoid generating
+            // incorrect type aliases because of types that we haven't
+            // been able to resolve (because, eg, they depend on a
+            // template parameter).
+            //
+            // It's kind of a shame not generating them even when they
+            // could be referenced, but we already do the same for items
+            // with invalid template parameters, and at least this way
+            // they can be replaced, instead of generating plain invalid
+            // code.
+            let inner_canon_type = inner_item.expect_type()
+                .canonical_type(ctx);
+            if inner_canon_type.is_invalid_named_type() {
+                warn!("Item contained invalid named type, skipping: \
+                       {:?}, {:?}",
+                      item,
+                      inner_item);
+                return;
+            }
+        }
+
+        let rust_name = ctx.rust_ident(&name);
+        let mut typedef = aster::AstBuilder::new().item().pub_();
+
+        if ctx.options().generate_comments {
+            if let Some(comment) = item.comment() {
+                typedef = typedef.attr().doc(comment);
+            }
+        }
+
+        // We prefer using `pub use` over `pub type` because of:
+        // https://github.com/rust-lang/rust/issues/26264
+        let simple_enum_path = match inner_rust_type.node {
+            ast::TyKind::Path(None, ref p) => {
+                if template_params.is_none() &&
+                    inner_item.expect_type()
+                    .canonical_type(ctx)
+                    .is_enum() &&
+                    p.segments.iter().all(|p| p.parameters.is_none()) {
+                        Some(p.clone())
+                    } else {
+                        None
+                    }
+            }
+            _ => None,
+        };
+
+        let typedef = if let Some(mut p) = simple_enum_path {
+            for ident in top_level_path(ctx, item).into_iter().rev() {
+                p.segments.insert(0,
+                                  ast::PathSegment {
+                                      identifier: ident,
+                                      parameters: None,
+                                  });
+            }
+            typedef.use_().build(p).as_(rust_name)
+        } else {
+            let mut generics = typedef.type_(rust_name).generics();
+            if let Some(template_params) = template_params.as_ref() {
+                for id in template_params {
+                    let template_param = ctx.resolve_type(*id);
+                    if template_param.is_named() {
+                        if template_param.is_invalid_named_type() {
+                            warn!("Item contained invalid template \
+                                   parameter: {:?}",
+                                  item);
+                            return;
+                        }
+                        generics =
+                            generics.ty_param_id(template_param.name().unwrap());
+                    }
+                }
+            }
+            generics.build().build_ty(inner_rust_type)
+        };
+
+        result.push(typedef)
     }
 }
 
