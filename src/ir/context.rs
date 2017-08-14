@@ -17,6 +17,7 @@ use callbacks::ParseCallbacks;
 use clang::{self, Cursor};
 use clang_sys;
 use parse::ClangItemParser;
+use rayon;
 use std::borrow::Cow;
 use std::cell::Cell;
 use std::collections::{HashMap, hash_map, HashSet};
@@ -24,6 +25,9 @@ use std::collections::btree_map::{self, BTreeMap};
 use std::fmt;
 use std::iter::IntoIterator;
 use std::mem;
+use std::ops;
+use std::sync::Mutex;
+use std::sync::atomic::AtomicBool;
 use syntax::ast::Ident;
 use syntax::codemap::{DUMMY_SP, Span};
 use syntax::ext::base::ExtCtxt;
@@ -85,17 +89,133 @@ enum TypeKey {
 
 // This is just convenience to avoid creating a manual debug impl for the
 // context.
-struct GenContext<'ctx>(ExtCtxt<'ctx>);
+pub struct CodegenContext<'a> {
+    ctx: &'a mut BindgenContext,
+    ext_ctx: ExtCtxt<'a>,
+    span: Span,
+}
 
-impl<'ctx> fmt::Debug for GenContext<'ctx> {
+impl<'a> fmt::Debug for CodegenContext<'a> {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
-        write!(fmt, "GenContext {{ ... }}")
+        write!(fmt, "CodegenContext {{ ... }}")
+    }
+}
+
+impl<'a> CodegenContext<'a> {
+    /// Get the syntex context.
+    pub fn ext_cx(&self) -> &ExtCtxt<'a> {
+        &self.ext_ctx
+    }
+
+    /// Get the current syntex span.
+    pub fn span(&self) -> Span {
+        self.span
+    }
+
+    /// Mangles a name so it doesn't conflict with any keyword.
+    pub fn rust_mangle<'b>(&self, name: &'b str) -> Cow<'b, str> {
+        use syntax::parse::token;
+        let ident = self.rust_ident_raw(name);
+        let token = token::Ident(ident);
+        if token.is_any_keyword() || name.contains("@") ||
+            name.contains("?") || name.contains("$") ||
+            "bool" == name {
+                let mut s = name.to_owned();
+                s = s.replace("@", "_");
+                s = s.replace("?", "_");
+                s = s.replace("$", "_");
+                s.push_str("_");
+                return Cow::Owned(s);
+            }
+        Cow::Borrowed(name)
+    }
+
+    /// Returns a mangled name as a rust identifier.
+    pub fn rust_ident(&self, name: &str) -> Ident {
+        self.rust_ident_raw(&self.rust_mangle(name))
+    }
+
+    /// Returns a mangled name as a rust identifier.
+    pub fn rust_ident_raw(&self, name: &str) -> Ident {
+        self.ext_cx().ident_of(name)
+    }
+
+    /// Convenient method for getting the prefix to use for most traits in
+    /// codegen depending on the `use_core` option.
+    pub fn trait_prefix(&self) -> Ident {
+        if self.options().use_core {
+            self.rust_ident_raw("core")
+        } else {
+            self.rust_ident_raw("std")
+        }
+    }
+}
+
+impl<'a> ops::Deref for CodegenContext<'a> {
+    type Target = BindgenContext;
+
+    fn deref(&self) -> &Self::Target {
+        &*self.ctx
+    }
+}
+
+impl<'a> ops::DerefMut for CodegenContext<'a> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.ctx
+    }
+}
+
+pub struct ParseContext<'a> {
+    ctx: &'a mut BindgenContext,
+
+    /// The translation unit for parsing.
+    translation_unit: clang::TranslationUnit,
+}
+
+impl<'a> ParseContext<'a> {
+    /// TODO FITZGEN
+    pub fn new(ctx: &'a mut BindgenContext) -> ParseContext<'a> {
+        let index = clang::Index::new(false, true);
+
+        let parse_options =
+            clang_sys::CXTranslationUnit_DetailedPreprocessingRecord;
+
+        let translation_unit =
+            clang::TranslationUnit::parse(&index,
+                                          "",
+                                          &ctx.options.clang_args,
+                                          &ctx.options.input_unsaved_files,
+                                          parse_options)
+                .expect("TranslationUnit::parse failed");
+
+        ParseContext {
+            ctx,
+            translation_unit
+        }
+    }
+    /// Get the current Clang translation unit that is being processed.
+    pub fn translation_unit(&self) -> &clang::TranslationUnit {
+        &self.translation_unit
+    }
+}
+
+impl<'a> ops::Deref for ParseContext<'a> {
+    type Target = BindgenContext;
+
+    fn deref(&self) -> &Self::Target {
+        &*self.ctx
+    }
+}
+
+impl<'a> ops::DerefMut for ParseContext<'a> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.ctx
     }
 }
 
 /// A context used during parsing and generation of structs.
 #[derive(Debug)]
-pub struct BindgenContext<'ctx> {
+pub struct BindgenContext {
     /// The map of all the items parsed so far.
     ///
     /// It's a BTreeMap because we want the keys to be sorted to have consistent
@@ -145,21 +265,14 @@ pub struct BindgenContext<'ctx> {
 
     collected_typerefs: bool,
 
-    /// Dummy structures for code generation.
-    gen_ctx: Option<&'ctx GenContext<'ctx>>,
-    span: Span,
-
-    /// The clang index for parsing.
-    index: clang::Index,
-
-    /// The translation unit for parsing.
-    translation_unit: clang::TranslationUnit,
+    // /// The clang index for parsing.
+    // index: clang::Index,
 
     /// The options given by the user via cli or other medium.
     options: BindgenOptions,
 
     /// Whether a bindgen complex was generated
-    generated_bindegen_complex: Cell<bool>,
+    generated_bindegen_complex: AtomicBool,
 
     /// The set of `ItemId`s that are whitelisted. This the very first thing
     /// computed after parsing our IR, and before running any of our analyses.
@@ -233,20 +346,15 @@ pub struct BindgenContext<'ctx> {
 }
 
 /// A traversal of whitelisted items.
-struct WhitelistedItemsTraversal<'ctx, 'gen>
-    where 'gen: 'ctx
-{
-    ctx: &'ctx BindgenContext<'gen>,
+struct WhitelistedItemsTraversal<'ctx> {
+    ctx: &'ctx BindgenContext,
     traversal: ItemTraversal<'ctx,
-                             'gen,
                              ItemSet,
                              Vec<ItemId>,
                              for<'a> fn(&'a BindgenContext, Edge) -> bool>,
 }
 
-impl<'ctx, 'gen> Iterator for WhitelistedItemsTraversal<'ctx, 'gen>
-    where 'gen: 'ctx
-{
+impl<'ctx> Iterator for WhitelistedItemsTraversal<'ctx> {
     type Item = ItemId;
 
     fn next(&mut self) -> Option<ItemId> {
@@ -260,11 +368,9 @@ impl<'ctx, 'gen> Iterator for WhitelistedItemsTraversal<'ctx, 'gen>
     }
 }
 
-impl<'ctx, 'gen> WhitelistedItemsTraversal<'ctx, 'gen>
-    where 'gen: 'ctx
-{
+impl<'ctx> WhitelistedItemsTraversal<'ctx> {
     /// Construct a new whitelisted items traversal.
-    pub fn new<R>(ctx: &'ctx BindgenContext<'gen>,
+    pub fn new<R>(ctx: &'ctx BindgenContext,
                   roots: R,
                   predicate: for<'a> fn(&'a BindgenContext, Edge) -> bool)
                   -> Self
@@ -277,22 +383,10 @@ impl<'ctx, 'gen> WhitelistedItemsTraversal<'ctx, 'gen>
     }
 }
 
-impl<'ctx> BindgenContext<'ctx> {
+impl BindgenContext {
     /// Construct the context for the given `options`.
     pub fn new(options: BindgenOptions) -> Self {
         use clang_sys;
-
-        let index = clang::Index::new(false, true);
-
-        let parse_options =
-            clang_sys::CXTranslationUnit_DetailedPreprocessingRecord;
-        let translation_unit =
-            clang::TranslationUnit::parse(&index,
-                                          "",
-                                          &options.clang_args,
-                                          &options.input_unsaved_files,
-                                          parse_options)
-                .expect("TranslationUnit::parse failed");
 
         // TODO(emilio): Use the CXTargetInfo here when available.
         //
@@ -344,12 +438,8 @@ impl<'ctx> BindgenContext<'ctx> {
             parsed_macros: Default::default(),
             replacements: Default::default(),
             collected_typerefs: false,
-            gen_ctx: None,
-            span: DUMMY_SP,
-            index: index,
-            translation_unit: translation_unit,
             options: options,
-            generated_bindegen_complex: Cell::new(false),
+            generated_bindegen_complex: AtomicBool::new(false),
             whitelisted: None,
             codegen_items: None,
             used_template_parameters: None,
@@ -532,46 +622,6 @@ impl<'ctx> BindgenContext<'ctx> {
         assert_eq!(definition.kind(),
                    clang_sys::CXCursor_TemplateTypeParameter);
         self.named_types.get(definition).cloned()
-    }
-
-    // TODO: Move all this syntax crap to other part of the code.
-
-    /// Given that we are in the codegen phase, get the syntex context.
-    pub fn ext_cx(&self) -> &ExtCtxt<'ctx> {
-        &self.gen_ctx.expect("Not in gen phase").0
-    }
-
-    /// Given that we are in the codegen phase, get the current syntex span.
-    pub fn span(&self) -> Span {
-        self.span
-    }
-
-    /// Mangles a name so it doesn't conflict with any keyword.
-    pub fn rust_mangle<'a>(&self, name: &'a str) -> Cow<'a, str> {
-        use syntax::parse::token;
-        let ident = self.rust_ident_raw(name);
-        let token = token::Ident(ident);
-        if token.is_any_keyword() || name.contains("@") ||
-           name.contains("?") || name.contains("$") ||
-           "bool" == name {
-            let mut s = name.to_owned();
-            s = s.replace("@", "_");
-            s = s.replace("?", "_");
-            s = s.replace("$", "_");
-            s.push_str("_");
-            return Cow::Owned(s);
-        }
-        Cow::Borrowed(name)
-    }
-
-    /// Returns a mangled name as a rust identifier.
-    pub fn rust_ident(&self, name: &str) -> Ident {
-        self.rust_ident_raw(&self.rust_mangle(name))
-    }
-
-    /// Returns a mangled name as a rust identifier.
-    pub fn rust_ident_raw(&self, name: &str) -> Ident {
-        self.ext_cx().ident_of(name)
     }
 
     /// Iterate over all items that have been defined.
@@ -783,7 +833,7 @@ impl<'ctx> BindgenContext<'ctx> {
     /// Enter the code generation phase, invoke the given callback `cb`, and
     /// leave the code generation phase.
     pub fn gen<F, Out>(&mut self, cb: F) -> Out
-        where F: FnOnce(&Self) -> Out,
+        where F: FnOnce(&CodegenContext) -> Out,
     {
         use aster::symbol::ToSymbol;
         use syntax::ext::expand::ExpansionConfig;
@@ -792,24 +842,10 @@ impl<'ctx> BindgenContext<'ctx> {
         use syntax::parse;
         use std::mem;
 
-        let cfg = ExpansionConfig::default("xxx".to_owned());
-        let sess = parse::ParseSess::new();
-        let mut loader = base::DummyResolver;
-        let mut ctx = GenContext(base::ExtCtxt::new(&sess, cfg, &mut loader));
-
-        ctx.0.bt_push(ExpnInfo {
-            call_site: self.span,
-            callee: NameAndSpan {
-                format: MacroBang("".to_symbol()),
-                allow_internal_unstable: false,
-                span: None,
-            },
-        });
-
-        // FIXME: This is evil, we should move code generation to use a wrapper
-        // of BindgenContext instead, I guess. Even though we know it's fine
-        // because we remove it before the end of this function.
-        self.gen_ctx = Some(unsafe { mem::transmute(&ctx) });
+        // =====================================================================
+        // Finish IR construction by resolving type refs and processing
+        // replacements.
+        // ====================================================================
 
         self.assert_no_dangling_references();
 
@@ -819,32 +855,97 @@ impl<'ctx> BindgenContext<'ctx> {
             self.process_replacements();
         }
 
-        // And assert once again, because resolving type refs and processing
-        // replacements both mutate the IR graph.
+        // ====================================================================
+        // The IR is now fully constructed and immutable. Time to run our
+        // various analyses.
+        // ====================================================================
+
+        // Assert that our completed IR graph is in a good state.
         self.assert_no_dangling_references();
-
-        // Compute the whitelisted set after processing replacements and
-        // resolving type refs, as those are the final mutations of the IR
-        // graph, and their completion means that the IR graph is now frozen.
-        self.compute_whitelisted_and_codegen_items();
-
-        // Make sure to do this after processing replacements, since that messes
-        // with the parentage and module children, and we want to assert that it
-        // messes with them correctly.
         self.assert_every_item_in_a_module();
 
-        self.compute_has_vtable();
-        self.find_used_template_parameters();
-        self.compute_cannot_derive_debug();
-        self.compute_cannot_derive_default();
-        self.compute_cannot_derive_copy();
-        self.compute_has_type_param_in_array();
-        self.compute_cannot_derive_hash();
-        self.compute_cannot_derive_partialeq();
+        // Compute the set of whitelisted items, and set of items we will
+        // codegen. These sets are used repeatedly, so its good to compute it
+        // eagerly and cache it.
+        self.compute_whitelisted_and_codegen_items();
 
-        let ret = cb(self);
-        self.gen_ctx = None;
-        ret
+        macro_rules! join {
+            ( $( self . $lhs:ident = $rhs:expr ; )* ) => {
+                // Fork-join all of the expressions.
+                let join!( < $( $lhs , )* ) = join!( > $( $rhs , )* );
+
+                // And then assign them to self after they've all been computed.
+                $(
+                    self.$lhs = $lhs;
+                )*
+            };
+
+            // Left hand side recursion to nest idents into tuple patterns like
+            // `(x, (y, (z, ...)))`.
+            ( < ) => {
+                ()
+            };
+            ( < $x:ident , $( $xs:ident , )* ) => {
+                ( $x , join!( < $( $xs , )* ) )
+            };
+
+            // Right hand side recursion to nest exprs into rayon fork-joins
+            // like:
+            //
+            //     rayon::join(
+            //         || x,
+            //         || rayon::join(
+            //             || y,
+            //             || rayon::join(
+            //                 || z,
+            //                 || ...)))
+            ( > ) => {
+                ()
+            };
+            ( > $x:expr , $( $xs:expr , )* ) => {
+                rayon::join( || $x , || join!( > $( $xs , )* ) )
+            }
+        }
+
+        let immut_self = &*self;
+        join!(
+            self.used_template_parameters = Some(immut_self.find_used_template_parameters());
+            self.cannot_derive_copy = Some(immut_self.compute_cannot_derive_copy());
+            self.has_type_param_in_array = Some(immut_self.compute_has_type_param_in_array());
+            self.have_vtable = Some(immut_self.compute_has_vtable());
+            self.cannot_derive_debug = immut_self.compute_cannot_derive_debug();
+            self.cannot_derive_hash = immut_self.compute_cannot_derive_hash();
+            self.cannot_derive_partialeq = immut_self.compute_cannot_derive_partialeq();
+        );
+
+        join!(
+            // Depends on the has_vtable analysis.
+            self.cannot_derive_default = immut_self.compute_cannot_derive_default();
+        );
+
+        // ====================================================================
+        // Finally, construct the necessary context for code generation!
+        // ====================================================================
+
+        let cfg = ExpansionConfig::default("xxx".to_owned());
+        let sess = parse::ParseSess::new();
+        let mut loader = base::DummyResolver;
+        let mut codegen_ctx = CodegenContext {
+            ctx: self,
+            ext_ctx: base::ExtCtxt::new(&sess, cfg, &mut loader),
+            span: DUMMY_SP,
+        };
+
+        codegen_ctx.ext_ctx.bt_push(ExpnInfo {
+            call_site: DUMMY_SP,
+            callee: NameAndSpan {
+                format: MacroBang("".to_symbol()),
+                allow_internal_unstable: false,
+                span: None,
+            },
+        });
+
+        cb(&mut codegen_ctx)
     }
 
     /// When the `testing_only_extra_assertions` feature is enabled, this
@@ -860,7 +961,7 @@ impl<'ctx> BindgenContext<'ctx> {
 
     fn assert_no_dangling_item_traversal<'me>
         (&'me self)
-         -> traversal::AssertNoDanglingItemsTraversal<'me, 'ctx> {
+         -> traversal::AssertNoDanglingItemsTraversal<'me> {
         assert!(self.in_codegen_phase());
         assert!(self.current_module == self.root_module);
 
@@ -907,9 +1008,9 @@ impl<'ctx> BindgenContext<'ctx> {
     }
 
     /// Compute whether the type has vtable.
-    fn compute_has_vtable(&mut self) {
+    fn compute_has_vtable(&self) -> HashSet<ItemId> {
         assert!(self.have_vtable.is_none());
-        self.have_vtable = Some(analyze::<HasVtableAnalysis>(self));
+        analyze::<HasVtableAnalysis>(self)
     }
 
     /// Look up whether the item with `id` has vtable or not.
@@ -922,10 +1023,9 @@ impl<'ctx> BindgenContext<'ctx> {
         self.have_vtable.as_ref().unwrap().contains(id)
     }
 
-    fn find_used_template_parameters(&mut self) {
+    fn find_used_template_parameters(&self) -> HashMap<ItemId, ItemSet> {
         if self.options.whitelist_recursively {
-            let used_params = analyze::<UsedTemplateParameters>(self);
-            self.used_template_parameters = Some(used_params);
+            analyze::<UsedTemplateParameters>(self)
         } else {
             // If you aren't recursively whitelisting, then we can't really make
             // any sense of template parameter usage, and you're on your own.
@@ -936,7 +1036,7 @@ impl<'ctx> BindgenContext<'ctx> {
                         .map_or(Default::default(),
                                 |params| params.into_iter().collect()));
             }
-            self.used_template_parameters = Some(used_params);
+            used_params
         }
     }
 
@@ -1477,11 +1577,6 @@ impl<'ctx> BindgenContext<'ctx> {
         Some(id)
     }
 
-    /// Get the current Clang translation unit that is being processed.
-    pub fn translation_unit(&self) -> &clang::TranslationUnit {
-        &self.translation_unit
-    }
-
     /// Have we parsed the macro named `macro_name` already?
     pub fn parsed_macro(&self, macro_name: &[u8]) -> bool {
         self.parsed_macros.contains_key(macro_name)
@@ -1502,7 +1597,7 @@ impl<'ctx> BindgenContext<'ctx> {
 
     /// Are we in the codegen phase?
     pub fn in_codegen_phase(&self) -> bool {
-        self.gen_ctx.is_some()
+        unimplemented!()
     }
 
     /// Mark the type with the given `name` as replaced by the type with id
@@ -1781,16 +1876,6 @@ impl<'ctx> BindgenContext<'ctx> {
         self.codegen_items = Some(codegen_items);
     }
 
-    /// Convenient method for getting the prefix to use for most traits in
-    /// codegen depending on the `use_core` option.
-    pub fn trait_prefix(&self) -> Ident {
-        if self.options().use_core {
-            self.rust_ident_raw("core")
-        } else {
-            self.rust_ident_raw("std")
-        }
-    }
-
     /// Call if a binden complex is generated
     pub fn generated_bindegen_complex(&self) {
         self.generated_bindegen_complex.set(true)
@@ -1802,10 +1887,12 @@ impl<'ctx> BindgenContext<'ctx> {
     }
 
     /// Compute whether we can derive debug.
-    fn compute_cannot_derive_debug(&mut self) {
+    fn compute_cannot_derive_debug(&self) -> Option<HashSet<ItemId>> {
         assert!(self.cannot_derive_debug.is_none());
         if self.options.derive_debug {
-            self.cannot_derive_debug = Some(analyze::<CannotDeriveDebug>(self));
+            Some(analyze::<CannotDeriveDebug>(self))
+        } else {
+            None
         }
     }
 
@@ -1821,10 +1908,12 @@ impl<'ctx> BindgenContext<'ctx> {
     }
 
     /// Compute whether we can derive default.
-    fn compute_cannot_derive_default(&mut self) {
+    fn compute_cannot_derive_default(&self) -> Option<HashSet<ItemId>> {
         assert!(self.cannot_derive_default.is_none());
         if self.options.derive_default {
-            self.cannot_derive_default = Some(analyze::<CannotDeriveDefault>(self));
+            Some(analyze::<CannotDeriveDefault>(self))
+        } else {
+            None
         }
     }
 
@@ -1840,16 +1929,18 @@ impl<'ctx> BindgenContext<'ctx> {
     }
 
     /// Compute whether we can derive debug.
-    fn compute_cannot_derive_copy(&mut self) {
+    fn compute_cannot_derive_copy(&self) -> HashSet<ItemId> {
         assert!(self.cannot_derive_copy.is_none());
-        self.cannot_derive_copy = Some(analyze::<CannotDeriveCopy>(self));
+        analyze::<CannotDeriveCopy>(self)
     }
 
     /// Compute whether we can derive hash.
-    fn compute_cannot_derive_hash(&mut self) {
+    fn compute_cannot_derive_hash(&self) -> Option<HashSet<ItemId>> {
         assert!(self.cannot_derive_hash.is_none());
         if self.options.derive_hash {
-            self.cannot_derive_hash = Some(analyze::<CannotDeriveHash>(self));
+            Some(analyze::<CannotDeriveHash>(self))
+        } else {
+            None
         }
     }
 
@@ -1865,9 +1956,13 @@ impl<'ctx> BindgenContext<'ctx> {
     }
 
     /// Compute whether we can derive hash.
-    fn compute_cannot_derive_partialeq(&mut self) {
+    fn compute_cannot_derive_partialeq(&self) -> Option<HashSet<ItemId>> {
         assert!(self.cannot_derive_partialeq.is_none());
-        self.cannot_derive_partialeq = Some(analyze::<CannotDerivePartialEq>(self));
+        if self.options.derive_partialeq {
+            Some(analyze::<CannotDerivePartialEq>(self))
+        } else {
+            None
+        }
     }
 
     /// Look up whether the item with `id` can
@@ -1894,9 +1989,9 @@ impl<'ctx> BindgenContext<'ctx> {
     }
 
     /// Compute whether the type has array.
-    fn compute_has_type_param_in_array(&mut self) {
+    fn compute_has_type_param_in_array(&self) -> HashSet<ItemId> {
         assert!(self.has_type_param_in_array.is_none());
-        self.has_type_param_in_array = Some(analyze::<HasTypeParameterInArray>(self));
+        analyze::<HasTypeParameterInArray>(self)
     }
 
     /// Look up whether the item with `id` has array or not.
@@ -1954,7 +2049,7 @@ impl ItemResolver {
     }
 
     /// Finish configuring and perform the actual item resolution.
-    pub fn resolve<'a, 'b>(self, ctx: &'a BindgenContext<'b>) -> &'a Item {
+    pub fn resolve(self, ctx: &BindgenContext) -> &Item {
         assert!(ctx.collected_typerefs());
 
         let mut id = self.id;

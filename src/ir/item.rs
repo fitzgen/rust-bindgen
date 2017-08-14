@@ -18,12 +18,14 @@ use super::ty::{Type, TypeKind};
 use super::analysis::HasVtable;
 use clang;
 use clang_sys;
+use lazy_init::Lazy;
 use parse::{ClangItemParser, ClangSubItemParser, ParseError, ParseResult};
-use std::cell::{Cell, RefCell};
 use std::collections::BTreeSet;
 use std::fmt::Write;
 use std::io;
 use std::iter;
+use std::sync::Mutex;
+use std::sync::atomic::AtomicUsize;
 use regex;
 
 /// A trait to get the canonical name from an item.
@@ -86,9 +88,7 @@ pub trait HasTypeParamInArray {
 /// up to (but not including) the implicit root module.
 pub trait ItemAncestors {
     /// Get an iterable over this item's ancestors.
-    fn ancestors<'a, 'b>(&self,
-                         ctx: &'a BindgenContext<'b>)
-                         -> ItemAncestorsIter<'a, 'b>;
+    fn ancestors<'a>(&self, ctx: &'a BindgenContext) -> ItemAncestorsIter<'a>;
 }
 
 cfg_if! {
@@ -112,18 +112,14 @@ cfg_if! {
 }
 
 /// An iterator over an item and its ancestors.
-pub struct ItemAncestorsIter<'a, 'b>
-    where 'b: 'a,
-{
+pub struct ItemAncestorsIter<'a> {
     item: ItemId,
-    ctx: &'a BindgenContext<'b>,
+    ctx: &'a BindgenContext,
     seen: DebugOnlyItemSet,
 }
 
-impl<'a, 'b> ItemAncestorsIter<'a, 'b>
-    where 'b: 'a,
-{
-    fn new(ctx: &'a BindgenContext<'b>, item: ItemId) -> Self {
+impl<'a> ItemAncestorsIter<'a> {
+    fn new(ctx: &'a BindgenContext, item: ItemId) -> Self {
         ItemAncestorsIter {
             item: item,
             ctx: ctx,
@@ -132,9 +128,7 @@ impl<'a, 'b> ItemAncestorsIter<'a, 'b>
     }
 }
 
-impl<'a, 'b> Iterator for ItemAncestorsIter<'a, 'b>
-    where 'b: 'a,
-{
+impl<'a> Iterator for ItemAncestorsIter<'a> {
     type Item = ItemId;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -208,17 +202,17 @@ impl ItemCanonicalPath for ItemId {
 }
 
 impl ItemAncestors for ItemId {
-    fn ancestors<'a, 'b>(&self,
-                         ctx: &'a BindgenContext<'b>)
-                         -> ItemAncestorsIter<'a, 'b> {
+    fn ancestors<'a>(&self,
+                     ctx: &'a BindgenContext)
+                     -> ItemAncestorsIter<'a> {
         ItemAncestorsIter::new(ctx, *self)
     }
 }
 
 impl ItemAncestors for Item {
-    fn ancestors<'a, 'b>(&self,
-                         ctx: &'a BindgenContext<'b>)
-                         -> ItemAncestorsIter<'a, 'b> {
+    fn ancestors<'a>(&self,
+                     ctx: &'a BindgenContext)
+                     -> ItemAncestorsIter<'a> {
         self.id().ancestors(ctx)
     }
 }
@@ -336,16 +330,16 @@ pub struct Item {
     ///
     /// Note that only structs, unions, and enums get a local type id. In any
     /// case this is an implementation detail.
-    local_id: Cell<Option<usize>>,
+    local_id: Lazy<usize>,
 
     /// The next local id to use for a child or template instantiation.
-    next_child_local_id: Cell<usize>,
+    next_child_local_id: AtomicUsize,
 
     /// A cached copy of the canonical name, as returned by `canonical_name`.
     ///
     /// This is a fairly used operation during codegen so this makes bindgen
     /// considerably faster in those cases.
-    canonical_name_cache: RefCell<Option<String>>,
+    canonical_name_cache: Lazy<String>,
 
     /// A doc comment over the item, if any.
     comment: Option<String>,
@@ -379,9 +373,9 @@ impl Item {
         debug_assert!(id != parent_id || kind.is_module());
         Item {
             id: id,
-            local_id: Cell::new(None),
-            next_child_local_id: Cell::new(1),
-            canonical_name_cache: RefCell::new(None),
+            local_id: Lazy::new(),
+            next_child_local_id: AtomicUsize::new(1),
+            canonical_name_cache: Lazy::new(),
             parent_id: parent_id,
             comment: comment,
             annotations: annotations.unwrap_or_default(),
@@ -585,9 +579,9 @@ impl Item {
     }
 
     /// Take out item NameOptions
-    pub fn name<'item, 'ctx>(&'item self,
-                             ctx: &'item BindgenContext<'ctx>)
-                             -> NameOptions<'item, 'ctx> {
+    pub fn name<'item>(&'item self,
+                             ctx: &'item BindgenContext)
+                             -> NameOptions<'item> {
         NameOptions::new(self, ctx)
     }
 
@@ -1601,17 +1595,15 @@ impl ItemCanonicalPath for Item {
 /// Builder struct for naming variations, which hold inside different
 /// flags for naming options.
 #[derive(Debug)]
-pub struct NameOptions<'item, 'ctx>
-    where 'ctx: 'item,
-{
+pub struct NameOptions<'item> {
     item: &'item Item,
-    ctx: &'item BindgenContext<'ctx>,
+    ctx: &'item BindgenContext,
     within_namespaces: bool,
 }
 
-impl<'item, 'ctx> NameOptions<'item, 'ctx> {
+impl<'item> NameOptions<'item> {
     /// Construct a new `NameOptions`
-    pub fn new(item: &'item Item, ctx: &'item BindgenContext<'ctx>) -> Self {
+    pub fn new(item: &'item Item, ctx: &'item BindgenContext) -> Self {
         NameOptions {
             item: item,
             ctx: ctx,

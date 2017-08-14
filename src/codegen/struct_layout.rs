@@ -15,9 +15,9 @@ use syntax::ast;
 
 /// Trace the layout of struct.
 #[derive(Debug)]
-pub struct StructLayoutTracker<'a, 'ctx: 'a> {
+pub struct StructLayoutTracker<'a> {
     name: &'a str,
-    ctx: &'a BindgenContext<'ctx>,
+    ctx: &'a BindgenContext,
     comp: &'a CompInfo,
     latest_offset: usize,
     padding_count: usize,
@@ -80,8 +80,8 @@ fn test_bytes_from_bits_pow2() {
     }
 }
 
-impl<'a, 'ctx> StructLayoutTracker<'a, 'ctx> {
-    pub fn new(ctx: &'a BindgenContext<'ctx>, comp: &'a CompInfo, name: &'a str) -> Self {
+impl<'a> StructLayoutTracker<'a> {
+    pub fn new(ctx: &'a BindgenContext, comp: &'a CompInfo, name: &'a str) -> Self {
         StructLayoutTracker {
             name: name,
             ctx: ctx,

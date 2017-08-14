@@ -33,10 +33,8 @@ use ir::comp::CompKind;
 ///   derived debug if any of the template arguments or template definition
 ///   cannot derive debug.
 #[derive(Debug, Clone)]
-pub struct CannotDeriveDebug<'ctx, 'gen>
-    where 'gen: 'ctx
-{
-    ctx: &'ctx BindgenContext<'gen>,
+pub struct CannotDeriveDebug<'ctx> {
+    ctx: &'ctx BindgenContext,
 
     // The incremental result of this analysis's computation. Everything in this
     // set cannot derive debug.
@@ -52,7 +50,7 @@ pub struct CannotDeriveDebug<'ctx, 'gen>
     dependencies: HashMap<ItemId, Vec<ItemId>>,
 }
 
-impl<'ctx, 'gen> CannotDeriveDebug<'ctx, 'gen> {
+impl<'ctx> CannotDeriveDebug<'ctx> {
     fn consider_edge(kind: EdgeKind) -> bool {
         match kind {
             // These are the only edges that can affect whether a type can derive
@@ -91,12 +89,12 @@ impl<'ctx, 'gen> CannotDeriveDebug<'ctx, 'gen> {
     }
 }
 
-impl<'ctx, 'gen> MonotoneFramework for CannotDeriveDebug<'ctx, 'gen> {
+impl<'ctx> MonotoneFramework for CannotDeriveDebug<'ctx> {
     type Node = ItemId;
-    type Extra = &'ctx BindgenContext<'gen>;
+    type Extra = &'ctx BindgenContext;
     type Output = HashSet<ItemId>;
 
-    fn new(ctx: &'ctx BindgenContext<'gen>) -> CannotDeriveDebug<'ctx, 'gen> {
+    fn new(ctx: &'ctx BindgenContext) -> CannotDeriveDebug<'ctx> {
         let cannot_derive_debug = HashSet::new();
         let dependencies = generate_dependencies(ctx, Self::consider_edge);
 
@@ -315,8 +313,8 @@ impl<'ctx, 'gen> MonotoneFramework for CannotDeriveDebug<'ctx, 'gen> {
     }
 }
 
-impl<'ctx, 'gen> From<CannotDeriveDebug<'ctx, 'gen>> for HashSet<ItemId> {
-    fn from(analysis: CannotDeriveDebug<'ctx, 'gen>) -> Self {
+impl<'ctx> From<CannotDeriveDebug<'ctx>> for HashSet<ItemId> {
+    fn from(analysis: CannotDeriveDebug<'ctx>) -> Self {
         analysis.cannot_derive_debug
     }
 }

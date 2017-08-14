@@ -20,9 +20,11 @@ extern crate cfg_if;
 extern crate cexpr;
 extern crate syntex_syntax as syntax;
 extern crate aster;
+extern crate lazy_init;
 extern crate quasi;
 extern crate clang_sys;
 extern crate peeking_take_while;
+extern crate rayon;
 extern crate regex;
 #[macro_use]
 extern crate lazy_static;
@@ -82,7 +84,7 @@ mod codegen {
 
 pub use features::{RustTarget, LATEST_STABLE_RUST, RUST_TARGET_STRINGS};
 use features::RustFeatures;
-use ir::context::{BindgenContext, ItemId};
+use ir::context::{BindgenContext, ItemId, ParseContext};
 use ir::item::Item;
 use parse::{ClangItemParser, ParseError};
 use regex_set::RegexSet;
@@ -879,7 +881,7 @@ impl Builder {
     }
 
     /// Generate the Rust bindings using the options built up thus far.
-    pub fn generate<'ctx>(mut self) -> Result<Bindings<'ctx>, ()> {
+    pub fn generate(mut self) -> Result<Bindings, ()> {
         self.options.input_header = self.input_headers.pop();
         self.options.clang_args.extend(
             self.input_headers.drain(..).flat_map(|header| {
@@ -1275,12 +1277,12 @@ fn ensure_libclang_is_loaded() {
 
 /// Generated Rust bindings.
 #[derive(Debug)]
-pub struct Bindings<'ctx> {
-    context: BindgenContext<'ctx>,
+pub struct Bindings {
+    context: BindgenContext,
     module: ast::Mod,
 }
 
-impl<'ctx> Bindings<'ctx> {
+impl Bindings {
     /// Generate bindings for the given options.
     ///
     /// Deprecated - use a `Builder` instead
@@ -1288,7 +1290,7 @@ impl<'ctx> Bindings<'ctx> {
     pub fn generate(
         mut options: BindgenOptions,
         span: Option<Span>,
-    ) -> Result<Bindings<'ctx>, ()> {
+    ) -> Result<Bindings, ()> {
         let span = span.unwrap_or(DUMMY_SP);
         ensure_libclang_is_loaded();
 
@@ -1510,6 +1512,7 @@ pub fn parse_one(
 fn parse(context: &mut BindgenContext) -> Result<(), ()> {
     use clang_sys::*;
 
+    let context = ParseContext::new(context);
     let mut any_error = false;
     for d in context.translation_unit().diags().iter() {
         let msg = d.format();
