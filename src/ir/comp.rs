@@ -574,7 +574,13 @@ fn bitfields_to_allocation_units<E, I>(
             .layout(ctx)
             .expect("Bitfield without layout? Gah!");
         let bitfield_size = bitfield_layout.size;
-        let bitfield_align = bitfield_layout.align;
+        let bitfield_align = if bitfield.name().is_none() {
+            // Anonymous bitfields can never be read, so unaligned reads are not
+            // a worry, and they don't contribute to alignement.
+            1
+        } else {
+            bitfield_layout.align
+        };
 
         let mut offset = unit_size_in_bits;
         if is_ms_struct {
@@ -612,19 +618,21 @@ fn bitfields_to_allocation_units<E, I>(
             }
         }
 
+        max_align = cmp::max(max_align, bitfield_align);
+
+        // NB: The `bitfield_width` here is completely, absolutely intentional.
+        // Alignment of the allocation unit is based on the maximum bitfield
+        // width, not (directly) on the bitfields' types' alignment.
+        if bitfield.name().is_some() {
+            unit_align = cmp::max(unit_align, bitfield_width);
+        }
+
         // Always keep all bitfields around. While unnamed bitifields are used
         // for padding (and usually not needed hereafter), large unnamed
         // bitfields over their types size cause weird allocation size behavior from clang.
         // Therefore, all bitfields needed to be kept around in order to check for this
         // and make the struct opaque in this case
         bitfields_in_unit.push(Bitfield::new(offset, bitfield));
-
-        max_align = cmp::max(max_align, bitfield_align);
-
-        // NB: The `bitfield_width` here is completely, absolutely intentional.
-        // Alignment of the allocation unit is based on the maximum bitfield
-        // width, not (directly) on the bitfields' types' alignment.
-        unit_align = cmp::max(unit_align, bitfield_width);
 
         unit_size_in_bits = offset + bitfield_width;
 

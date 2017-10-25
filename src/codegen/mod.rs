@@ -1189,16 +1189,18 @@ impl<'a> FieldCodegen<'a> for BitfieldUnit {
         };
         fields.extend(Some(field));
 
+        let field_int_align = self.layout().align;
         let mut field_int_size = self.layout().size;
         if !field_int_size.is_power_of_two() {
             field_int_size = field_int_size.next_power_of_two();
         }
 
         let unit_field_int_ty = match field_int_size {
+            1 => quote! { u8  },
+            n if field_int_align == 1 => quote! { [u8; #n] },
             8 => quote! { u64 },
             4 => quote! { u32 },
             2 => quote! { u16 },
-            1 => quote! { u8  },
             size => {
                 debug_assert!(size > 8);
                 // Can't generate bitfield accessors for unit sizes larget than
