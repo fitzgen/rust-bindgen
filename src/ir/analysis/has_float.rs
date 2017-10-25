@@ -173,6 +173,7 @@ impl<'ctx> MonotoneFramework for HasFloat<'ctx> {
                 }
                 let fields_have = info.fields()
                     .iter()
+                    .filter(|f| !f.is_added_by_bindgen())
                     .any(|f| {
                         match *f {
                             Field::DataMember(ref data) => {

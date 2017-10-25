@@ -2,18 +2,16 @@ mod impl_debug;
 mod impl_partialeq;
 mod error;
 mod helpers;
-pub mod struct_layout;
 
 use self::helpers::attributes;
-use self::struct_layout::StructLayoutTracker;
 
 use super::BindgenOptions;
 
-use ir::analysis::{HasVtable, Sizedness};
+use ir::analysis::HasVtable;
 use ir::annotations::FieldAccessorKind;
 use ir::comment;
-use ir::comp::{Base, Bitfield, BitfieldUnit, CompInfo, CompKind, Field,
-               FieldData, FieldMethods, Method, MethodKind};
+use ir::comp::{Bitfield, BitfieldUnit, CompInfo, CompKind, Field, FieldData,
+               FieldMethods, Method, MethodKind};
 use ir::context::{BindgenContext, ItemId};
 use ir::derive::{CanDeriveCopy, CanDeriveDebug, CanDeriveDefault,
                  CanDeriveHash, CanDerivePartialOrd, CanDeriveOrd,
@@ -745,72 +743,6 @@ impl CodeGenerator for Type {
     }
 }
 
-struct Vtable<'a> {
-    item_id: ItemId,
-    #[allow(dead_code)]
-    methods: &'a [Method],
-    #[allow(dead_code)]
-    base_classes: &'a [Base],
-}
-
-impl<'a> Vtable<'a> {
-    fn new(
-        item_id: ItemId,
-        methods: &'a [Method],
-        base_classes: &'a [Base],
-    ) -> Self {
-        Vtable {
-            item_id: item_id,
-            methods: methods,
-            base_classes: base_classes,
-        }
-    }
-}
-
-impl<'a> CodeGenerator for Vtable<'a> {
-    type Extra = Item;
-
-    fn codegen<'b>(
-        &self,
-        ctx: &BindgenContext,
-        result: &mut CodegenResult<'b>,
-        item: &Item,
-    ) {
-        assert_eq!(item.id(), self.item_id);
-        debug_assert!(item.is_enabled_for_codegen(ctx));
-
-        // For now, generate an empty struct, later we should generate function
-        // pointers and whatnot.
-        let name = ctx.rust_ident(&self.canonical_name(ctx));
-        let void = helpers::ast_ty::raw_type(ctx, "c_void");
-        result.push(quote! {
-            #[repr(C)]
-            pub struct #name ( #void );
-        });
-    }
-}
-
-impl<'a> ItemCanonicalName for Vtable<'a> {
-    fn canonical_name(&self, ctx: &BindgenContext) -> String {
-        format!("{}__bindgen_vtable", self.item_id.canonical_name(ctx))
-    }
-}
-
-impl<'a> TryToRustTy for Vtable<'a> {
-    type Extra = ();
-
-    fn try_to_rust_ty(
-        &self,
-        ctx: &BindgenContext,
-        _: &(),
-    ) -> error::Result<quote::Tokens> {
-        let name = ctx.rust_ident(self.canonical_name(ctx));
-        Ok(quote! {
-            #name
-        })
-    }
-}
-
 impl CodeGenerator for TemplateInstantiation {
     type Extra = Item;
 
@@ -893,7 +825,6 @@ trait FieldCodegen<'a> {
         accessor_kind: FieldAccessorKind,
         parent: &CompInfo,
         result: &mut CodegenResult,
-        struct_layout: &mut StructLayoutTracker,
         fields: &mut F,
         methods: &mut M,
         extra: Self::Extra,
@@ -913,7 +844,6 @@ impl<'a> FieldCodegen<'a> for Field {
         accessor_kind: FieldAccessorKind,
         parent: &CompInfo,
         result: &mut CodegenResult,
-        struct_layout: &mut StructLayoutTracker,
         fields: &mut F,
         methods: &mut M,
         _: (),
@@ -930,7 +860,6 @@ impl<'a> FieldCodegen<'a> for Field {
                     accessor_kind,
                     parent,
                     result,
-                    struct_layout,
                     fields,
                     methods,
                     (),
@@ -944,7 +873,6 @@ impl<'a> FieldCodegen<'a> for Field {
                     accessor_kind,
                     parent,
                     result,
-                    struct_layout,
                     fields,
                     methods,
                     (),
@@ -965,7 +893,6 @@ impl<'a> FieldCodegen<'a> for FieldData {
         accessor_kind: FieldAccessorKind,
         parent: &CompInfo,
         result: &mut CodegenResult,
-        struct_layout: &mut StructLayoutTracker,
         fields: &mut F,
         methods: &mut M,
         _: (),
@@ -1025,14 +952,6 @@ impl<'a> FieldCodegen<'a> for FieldData {
                 .map(|name| ctx.rust_mangle(name).into_owned())
                 .expect("Each field should have a name in codegen!");
         let field_ident = ctx.rust_ident_raw(field_name.as_str());
-
-        if !parent.is_union() {
-            if let Some(padding_field) =
-                struct_layout.pad_field(&field_name, field_ty, self.offset())
-            {
-                fields.extend(Some(padding_field));
-            }
-        }
 
         let is_private = self.annotations().private_fields().unwrap_or(
             fields_should_be_private,
@@ -1158,7 +1077,6 @@ impl<'a> FieldCodegen<'a> for BitfieldUnit {
         accessor_kind: FieldAccessorKind,
         parent: &CompInfo,
         result: &mut CodegenResult,
-        struct_layout: &mut StructLayoutTracker,
         fields: &mut F,
         methods: &mut M,
         _: (),
@@ -1203,7 +1121,6 @@ impl<'a> FieldCodegen<'a> for BitfieldUnit {
                 debug_assert!(size > 8);
                 // Can't generate bitfield accessors for unit sizes larget than
                 // 64 bits at the moment.
-                struct_layout.saw_bitfield_unit(self.layout());
                 return;
             }
         };
@@ -1224,7 +1141,6 @@ impl<'a> FieldCodegen<'a> for BitfieldUnit {
                 accessor_kind,
                 parent,
                 result,
-                struct_layout,
                 fields,
                 methods,
                 (&unit_field_name, unit_field_int_ty.clone()),
@@ -1259,8 +1175,6 @@ impl<'a> FieldCodegen<'a> for BitfieldUnit {
                 #ctor_impl
             }
         }));
-
-        struct_layout.saw_bitfield_unit(self.layout());
     }
 }
 
@@ -1293,7 +1207,6 @@ impl<'a> FieldCodegen<'a> for Bitfield {
         _accessor_kind: FieldAccessorKind,
         _parent: &CompInfo,
         _result: &mut CodegenResult,
-        _struct_layout: &mut StructLayoutTracker,
         _fields: &mut F,
         methods: &mut M,
         (unit_field_name, unit_field_int_ty): (&'a str, quote::Tokens),
@@ -1394,7 +1307,8 @@ impl CodeGenerator for CompInfo {
 
         let used_template_params = item.used_template_params(ctx);
 
-        let mut packed = self.packed();
+        // TODO FITZGEN: we set this in some cases too
+        let packed = self.packed();
 
         // generate tuple struct if struct or union is a forward declaration,
         // skip for now if template parameters are needed.
@@ -1430,43 +1344,6 @@ impl CodeGenerator for CompInfo {
         // the parent too.
         let is_opaque = item.is_opaque(ctx, &());
         let mut fields = vec![];
-        let mut struct_layout =
-            StructLayoutTracker::new(ctx, self, &canonical_name);
-
-        if !is_opaque {
-            if item.has_vtable_ptr(ctx) {
-                let vtable =
-                    Vtable::new(item.id(), self.methods(), self.base_members());
-                vtable.codegen(ctx, result, item);
-
-                let vtable_type = vtable
-                    .try_to_rust_ty(ctx, &())
-                    .expect("vtable to Rust type conversion is infallible")
-                    .to_ptr(true);
-
-                fields.push(quote! {
-                    pub vtable_: #vtable_type ,
-                });
-
-                struct_layout.saw_vtable();
-            }
-
-            for base in self.base_members() {
-                if !base.requires_storage(ctx) {
-                    continue;
-                }
-
-                let inner = base.ty.to_rust_ty_or_opaque(ctx, &());
-                let field_name = ctx.rust_ident(&base.field_name);
-
-                let base_ty = ctx.resolve_type(base.ty);
-                struct_layout.saw_base(base_ty);
-
-                fields.push(quote! {
-                    pub #field_name : #inner ,
-                });
-            }
-        }
 
         let is_union = self.kind() == CompKind::Union;
         if is_union {
@@ -1492,7 +1369,6 @@ impl CodeGenerator for CompInfo {
                     struct_accessor_kind,
                     self,
                     result,
-                    &mut struct_layout,
                     &mut fields,
                     &mut methods,
                     (),
@@ -1510,8 +1386,6 @@ impl CodeGenerator for CompInfo {
                     _bindgen_union_align: #ty ,
                 }
             } else {
-                struct_layout.saw_union(layout);
-
                 quote! {
                     pub bindgen_union_field: #ty ,
                 }
@@ -1533,52 +1407,6 @@ impl CodeGenerator for CompInfo {
                 None => {
                     warn!("Opaque type without layout! Expect dragons!");
                 }
-            }
-        } else if !is_union && !item.is_zero_sized(ctx) {
-            if let Some(padding_field) =
-                layout.and_then(|layout| struct_layout.pad_struct(layout))
-            {
-                fields.push(padding_field);
-            }
-
-            if let Some(layout) = layout {
-                if struct_layout.requires_explicit_align(layout) {
-                    if layout.align == 1 {
-                        packed = true;
-                    } else {
-                        let ty = helpers::blob(Layout::new(0, layout.align));
-                        fields.push(quote! {
-                            pub __bindgen_align: #ty ,
-                        });
-                    }
-                }
-            }
-        }
-
-        // C++ requires every struct to be addressable, so what C++ compilers do
-        // is making the struct 1-byte sized.
-        //
-        // This is apparently not the case for C, see:
-        // https://github.com/rust-lang-nursery/rust-bindgen/issues/551
-        //
-        // Just get the layout, and assume C++ if not.
-        //
-        // NOTE: This check is conveniently here to avoid the dummy fields we
-        // may add for unused template parameters.
-        if item.is_zero_sized(ctx) {
-            let has_address = if is_opaque {
-                // Generate the address field if it's an opaque type and
-                // couldn't determine the layout of the blob.
-                layout.is_none()
-            } else {
-                layout.map_or(true, |l| l.size != 0)
-            };
-
-            if has_address {
-                let ty = helpers::blob(Layout::new(1, 1));
-                fields.push(quote! {
-                    pub _address: #ty,
-                });
             }
         }
 

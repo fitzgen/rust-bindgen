@@ -267,8 +267,10 @@ impl<'ctx> MonotoneFramework for CannotDeriveCopy<'ctx> {
                     return self.insert(id);
                 }
 
-                let fields_cannot_derive =
-                    info.fields().iter().any(|f| match *f {
+                let fields_cannot_derive = info.fields()
+                    .iter()
+                    .filter(|f| !f.is_added_by_bindgen())
+                    .any(|f| match *f {
                         Field::DataMember(ref data) => {
                             self.is_not_copy(data.ty())
                         }
@@ -276,7 +278,7 @@ impl<'ctx> MonotoneFramework for CannotDeriveCopy<'ctx> {
                             if bfu.layout().align > RUST_DERIVE_IN_ARRAY_LIMIT {
                                 trace!(
                                     "   we cannot derive Copy for a bitfield larger then \
-                                        the limit"
+                                     the limit"
                                 );
                                 return true;
                             }

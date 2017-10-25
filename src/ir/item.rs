@@ -1000,11 +1000,13 @@ where
 
     fn has_vtable_ptr(&self, ctx: &BindgenContext) -> bool {
         let id: ItemId = (*self).into();
-        id.as_type_id(ctx)
-            .map_or(false, |id| match ctx.lookup_has_vtable(id) {
-                HasVtableResult::SelfHasVtable => true,
-                _ => false,
-            })
+        // Unchecked because this can be called from within `with_loaned_item`
+        // when the item has been removed.
+        let id = id.as_type_id_unchecked();
+        match ctx.lookup_has_vtable(id) {
+            HasVtableResult::SelfHasVtable => true,
+            _ => false,
+        }
     }
 }
 
@@ -1024,8 +1026,11 @@ where
 {
     fn sizedness(&self, ctx: &BindgenContext) -> SizednessResult {
         let id: ItemId = (*self).into();
-        id.as_type_id(ctx)
-            .map_or(SizednessResult::default(), |id| ctx.lookup_sizedness(id))
+        // Unchecked because it can be called from `with_loaned_item`. It's ok
+        // because it won't have an entry in the table if it isn't a type ID,
+        // and we'll just say it is `ZeroSized`.
+        let id = id.as_type_id_unchecked();
+        ctx.lookup_sizedness(id)
     }
 }
 

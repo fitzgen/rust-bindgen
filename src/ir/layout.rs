@@ -8,7 +8,7 @@ use clang;
 use std::{cmp, mem};
 
 /// A type that represents the struct layout of a type.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Layout {
     /// The size (in bytes) of this layout.
     pub size: usize,

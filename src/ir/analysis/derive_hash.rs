@@ -282,8 +282,10 @@ impl<'ctx> MonotoneFramework for CannotDeriveHash<'ctx> {
                     return self.insert(id);
                 }
 
-                let fields_cannot_derive =
-                    info.fields().iter().any(|f| match *f {
+                let fields_cannot_derive = info.fields()
+                    .iter()
+                    .filter(|f| !f.is_added_by_bindgen())
+                    .any(|f| match *f {
                         Field::DataMember(ref data) => {
                             !self.ctx.whitelisted_items().contains(
                                 &data.ty().into(),

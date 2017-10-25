@@ -1,6 +1,6 @@
 //! Compound types (unions and structs) in our intermediate representation.
 
-use super::analysis::Sizedness;
+use super::analysis::{HasVtable, Sizedness};
 use super::annotations::Annotations;
 use super::context::{BindgenContext, FunctionId, ItemId, TypeId, VarId};
 use super::dot::DotAttributes;
@@ -10,7 +10,6 @@ use super::layout::Layout;
 use super::template::TemplateParameters;
 use super::traversal::{EdgeKind, Trace, Tracer};
 use clang;
-use codegen::struct_layout::{align_to, bytes_from_bits_pow2};
 use ir::derive::CanDeriveCopy;
 use parse::{ClangItemParser, ParseError};
 use peeking_take_while::PeekableExt;
@@ -128,6 +127,12 @@ pub trait FieldMethods {
 
     /// The offset of the field (in bits)
     fn offset(&self) -> Option<usize>;
+
+    /// Was this field added by `bindgen`? In other words, is it not explicitly
+    /// present in the struct's definition? Examples of fields added by bindgen
+    /// include `_base` member fields, implicit vtable pointers, padding fields,
+    /// alignment fields, etc...
+    fn is_added_by_bindgen(&self) -> bool;
 }
 
 /// A contiguous set of logical bitfields that live within the same physical
@@ -180,6 +185,14 @@ impl Field {
             Field::DataMember(ref data) => {
                 ctx.resolve_type(data.ty).layout(ctx)
             }
+        }
+    }
+
+    /// TODO FITZGEN
+    pub fn is_added_by_bindgen(&self) -> bool {
+        match *self {
+            Field::Bitfields(..) => false,
+            Field::DataMember(ref data) => data.is_added_by_bindgen(),
         }
     }
 }
@@ -398,6 +411,11 @@ impl FieldMethods for Bitfield {
     fn offset(&self) -> Option<usize> {
         self.data.offset()
     }
+
+    fn is_added_by_bindgen(&self) -> bool {
+        // We never add bitfields.
+        false
+    }
 }
 
 
@@ -427,6 +445,7 @@ impl RawField {
             bitfield_width,
             mutable,
             offset,
+            is_added_by_bindgen: false,
         })
     }
 }
@@ -458,6 +477,12 @@ impl FieldMethods for RawField {
 
     fn offset(&self) -> Option<usize> {
         self.0.offset()
+    }
+
+    fn is_added_by_bindgen(&self) -> bool {
+        // We only add fields after bitfield units have been completed, so raw
+        // fields are never added by `bindgen`.
+        false
     }
 }
 
@@ -794,7 +819,9 @@ impl Trace for CompFields {
             }
             CompFields::AfterComputingBitfieldUnits(ref fields) => {
                 for f in fields {
-                    f.trace(context, tracer, &());
+                    if !f.is_added_by_bindgen() {
+                        f.trace(context, tracer, &());
+                    }
                 }
             }
         }
@@ -824,6 +851,9 @@ pub struct FieldData {
 
     /// The offset of the field (in bits)
     offset: Option<usize>,
+
+    /// Did we add this ourselves?
+    is_added_by_bindgen: bool,
 }
 
 impl FieldMethods for FieldData {
@@ -853,6 +883,10 @@ impl FieldMethods for FieldData {
 
     fn offset(&self) -> Option<usize> {
         self.offset
+    }
+
+    fn is_added_by_bindgen(&self) -> bool {
+        self.is_added_by_bindgen
     }
 }
 
@@ -1458,6 +1492,274 @@ impl CompInfo {
         self.fields.deanonymize_fields(ctx, &self.methods);
     }
 
+    /// TODO FITZGEN
+    pub fn compute_padding(
+        &mut self,
+        ctx: &mut BindgenContext,
+        id: TypeId,
+        actual_layout: Option<Layout>
+    ) {
+        if self.is_opaque(ctx, &()) {
+            return;
+        }
+
+        let mut fields_with_padding = vec![];
+        let mut next_offset = 0;
+        let mut max_align = 0;
+        let mut padding_count = 0;
+
+        // TODO: get this layout out of `libclang` somehow, to support cross
+        // compilation properly.
+        let void_ptr_layout = Layout::new(
+            mem::size_of::<*mut ()>(),
+            mem::align_of::<*mut ()>(),
+        );
+        info!("FITZGEN: void_ptr_layout = {:?}", void_ptr_layout);
+
+        let void_ptr = ctx.get_or_create_opaque_blob_type(void_ptr_layout);
+
+        if id.has_vtable_ptr(ctx) {
+            assert!(!self.is_union(), "unions can't have virtual functions");
+
+            fields_with_padding.push(Field::DataMember(FieldData {
+                name: Some("vtable_".into()),
+                ty: void_ptr,
+                comment: None,
+                annotations: Annotations::default(),
+                bitfield_width: None,
+                mutable: false,
+                offset: Some(next_offset),
+                is_added_by_bindgen: true,
+            }));
+
+            next_offset += void_ptr_layout.size;
+            max_align = cmp::max(max_align, void_ptr_layout.align);
+        }
+
+        for base in self.base_members() {
+            assert!(!self.is_union(), "unions can't have base members");
+
+            if !base.requires_storage(ctx) {
+                continue;
+            }
+
+            fields_with_padding.push(Field::DataMember(FieldData {
+                name: Some(base.field_name.clone()),
+                ty: base.ty,
+                comment: None,
+                annotations: Annotations::default(),
+                bitfield_width: None,
+                mutable: false,
+                offset: Some(next_offset),
+                is_added_by_bindgen: true,
+            }));
+
+            let layout = ctx.resolve_type(base.ty)
+                .layout(ctx)
+                .expect("TODO FITZGEN");
+
+            next_offset += layout.size;
+            max_align = cmp::max(max_align, layout.align);
+        }
+
+        let fields_without_padding = match self.fields {
+            CompFields::BeforeComputingBitfieldUnits(_) => {
+                panic!("should have already computed bitfield units")
+            }
+            CompFields::AfterComputingBitfieldUnits(ref mut fields) => {
+                mem::replace(fields, vec![])
+            }
+        };
+
+        for field in fields_without_padding {
+            info!("FITZGEN: field = {:?}", field);
+            info!("FITZGEN: self.is_union() = {:?}", self.is_union());
+
+            match field {
+                Field::DataMember(ref data) if self.is_union() => {
+                    // Unions don't get any padding fields.
+                    let field_ty = ctx.resolve_type(data.ty());
+                    let field_layout = field_ty.layout(ctx).unwrap_or(Layout::zero());
+                    max_align = cmp::max(max_align, field_layout.align);
+                    next_offset = cmp::max(next_offset, field_layout.size);
+                    info!("FITZGEN: after field in union:");
+                    info!("FITZGEN:     field_layout = {:?}", field_layout);
+                    info!("FITZGEN:     max_align = {}", max_align);
+                    info!("FITZGEN:     next_offset = {}", next_offset);
+                }
+                Field::DataMember(ref data) => {
+                    if let Some(layout) = {
+                        ctx.resolve_type(data.ty()).layout(ctx)
+                    } {
+                        if let Some(padding) = self.padding_up_to(
+                            ctx,
+                            &void_ptr_layout,
+                            &mut padding_count,
+                            &mut max_align,
+                            &mut next_offset,
+                            data.offset(),
+                            layout
+                        ) {
+                            fields_with_padding.push(padding);
+                        }
+                        info!("FITZGEN: after field:");
+                        info!("FITZGEN:     layout = {:?}", layout);
+                        info!("FITZGEN:     max_align = {}", max_align);
+                        info!("FITZGEN:     next_offset = {}", next_offset);
+                    }
+                }
+                Field::Bitfields(ref unit) => {
+                    if let Some(padding) = self.padding_up_to(
+                        ctx,
+                        &void_ptr_layout,
+                        &mut padding_count,
+                        &mut max_align,
+                        &mut next_offset,
+                        None,
+                        unit.layout
+                    ) {
+                        fields_with_padding.push(padding);
+                    }
+                }
+            }
+
+            fields_with_padding.push(field);
+        }
+
+        // TODO FITZGEN
+        if fields_with_padding.is_empty() {
+            assert_eq!(max_align, 0);
+            assert_eq!(next_offset, 0);
+            assert!(id.is_zero_sized(ctx));
+
+            let padding_layout = Layout::new(1, 1);
+            let ty = ctx.get_or_create_opaque_blob_type(padding_layout);
+            fields_with_padding.push(Field::DataMember(FieldData {
+                name: Some("_address".into()),
+                ty: ty,
+                comment: None,
+                annotations: Annotations::default(),
+                bitfield_width: None,
+                mutable: false,
+                offset: None,
+                is_added_by_bindgen: true,
+            }));
+
+            max_align = 1;
+            next_offset = 1;
+        }
+
+        if let Some(actual_layout) = actual_layout {
+            // info!("FITZGEN: (before) actual_layout = {:?}", actual_layout);
+            // actual_layout.align = cmp::min(actual_layout.align, void_ptr_layout.align);
+            // info!("FITZGEN: (after) actual_layout = {:?}", actual_layout);
+
+            let computed_layout = Layout::new(next_offset, max_align);
+            info!("FITZGEN: computed_layout = {:?}", computed_layout);
+
+            assert_eq!(
+                computed_layout,
+                actual_layout,
+                "Computed layout should match actual layout"
+            );
+        }
+
+        // if struct_layout.requires_explicit_align(layout) {
+        //     if layout.align == 1 {
+        //         packed = true;
+        //     } else {
+        //         let ty = helpers::blob(Layout::new(0, layout.align));
+        //         fields.push(quote! {
+        //             pub __bindgen_align: #ty ,
+        //         });
+        //     }
+        // }
+        self.fields = CompFields::AfterComputingBitfieldUnits(fields_with_padding);
+    }
+
+    fn padding_up_to(
+        &self,
+        ctx: &mut BindgenContext,
+        void_ptr_layout: &Layout,
+        padding_count: &mut usize,
+        max_align: &mut usize,
+        next_offset: &mut usize,
+        clang_bit_offset: Option<usize>,
+        mut layout: Layout
+    ) -> Option<Field> {
+        info!("FITZGEN: padding_up_to {:?}", layout);
+        info!("FITZGEN:     (before) max_align = {}", max_align);
+        info!("FITZGEN:     (before) next_offset = {}", max_align);
+
+        *max_align = cmp::max(*max_align, layout.align);
+
+        // TODO FITZGEN: explain this hack.
+        //
+        // TODO FITZGEN: StructLayoutTracker only does this
+        // with arrays, but that seems wrong...?
+        if layout.align > void_ptr_layout.align {
+            // layout.align = align_to(layout.size, layout.align);
+            layout.align = void_ptr_layout.align;
+        }
+
+        // TODO FITZGEN: self.last_field_was_bitfield stuff
+        // here? I think we can get away without it...
+
+        let padding = if self.packed() {
+            // Packed structs don't get any padding.
+            None
+        } else {
+            let padding_bytes = match clang_bit_offset {
+                // If `libclang` tells us that the (bit)
+                // offset is beyond what we've added to
+                // `fields_with_padding` so far, then trust
+                // what they say over any of our other
+                // calculations.
+                Some(offset) if offset / 8 > *next_offset => {
+                    offset / 8 - *next_offset
+                }
+                // Fields of 0- and 1-aligned types can be
+                // placed anywhere without regard.
+                _ if layout.align <= 0 => {
+                    0
+                }
+                // Otherwise, pad to the field's type's
+                // alignment.
+                _ => {
+                    align_to(*next_offset, layout.align) - *next_offset
+                }
+            };
+
+            if padding_bytes > 0 {
+                *next_offset += padding_bytes;
+
+                let padding_layout = Layout::new(padding_bytes, 1);
+                let ty = ctx.get_or_create_opaque_blob_type(padding_layout);
+                Some(Field::DataMember(FieldData {
+                    name: Some(format!("__bindgen_padding_{}", {
+                        let i = *padding_count;
+                        *padding_count += 1;
+                        i
+                    })),
+                    ty: ty,
+                    comment: None,
+                    annotations: Annotations::default(),
+                    bitfield_width: None,
+                    mutable: false,
+                    offset: None,
+                    is_added_by_bindgen: true,
+                }))
+            } else {
+                None
+            }
+        };
+
+        *next_offset += layout.size;
+        info!("FITZGEN:     (after) max_align = {}", max_align);
+        info!("FITZGEN:     (after) next_offset = {}", next_offset);
+        padding
+    }
+
     /// Returns whether the current union can be represented as a Rust `union`
     ///
     /// Requirements:
@@ -1608,5 +1910,63 @@ impl Trace for CompInfo {
         }
 
         self.fields.trace(context, tracer, &());
+    }
+}
+
+/// Returns a size aligned to a given value.
+pub fn align_to(size: usize, align: usize) -> usize {
+    if align == 0 {
+        return size;
+    }
+
+    let rem = size % align;
+    if rem == 0 {
+        return size;
+    }
+
+    size + align - rem
+}
+
+/// Returns the lower power of two byte count that can hold at most n bits.
+pub fn bytes_from_bits_pow2(mut n: usize) -> usize {
+    if n == 0 {
+        return 0;
+    }
+
+    if n <= 8 {
+        return 1;
+    }
+
+    if !n.is_power_of_two() {
+        n = n.next_power_of_two();
+    }
+
+    n / 8
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn test_align_to() {
+        assert_eq!(align_to(1, 1), 1);
+        assert_eq!(align_to(1, 2), 2);
+        assert_eq!(align_to(1, 4), 4);
+        assert_eq!(align_to(5, 1), 5);
+        assert_eq!(align_to(17, 4), 20);
+    }
+
+    #[test]
+    fn test_bytes_from_bits_pow2() {
+        assert_eq!(bytes_from_bits_pow2(0), 0);
+        for i in 1..9 {
+            assert_eq!(bytes_from_bits_pow2(i), 1);
+        }
+        for i in 9..17 {
+            assert_eq!(bytes_from_bits_pow2(i), 2);
+        }
+        for i in 17..33 {
+            assert_eq!(bytes_from_bits_pow2(i), 4);
+        }
     }
 }

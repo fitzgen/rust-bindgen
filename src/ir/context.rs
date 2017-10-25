@@ -17,6 +17,7 @@ use super::template::{TemplateInstantiation, TemplateParameters};
 use super::traversal::{self, Edge, ItemTraversal};
 use super::ty::{FloatKind, Type, TypeKind};
 use super::function::Function;
+use super::layout::Layout;
 use super::super::time::Timer;
 use BindgenOptions;
 use callbacks::ParseCallbacks;
@@ -315,6 +316,9 @@ pub struct BindgenContext {
     /// item ids during parsing.
     types: HashMap<TypeKey, TypeId>,
 
+    /// TODO FITZGEN
+    opaque_blob_types: HashMap<Layout, TypeId>,
+
     /// Maps from a cursor to the item id of the named template type parameter
     /// for that cursor.
     type_params: HashMap<clang::Cursor, TypeId>,
@@ -562,15 +566,23 @@ impl BindgenContext {
             ).expect("TranslationUnit::parse failed")
         };
 
-        let root_module = Self::build_root_module(ItemId(0));
+        let mut item_id_counter = 0;
+        let mut next_item_id = || {
+            let id = item_id_counter;
+            item_id_counter += 1;
+            ItemId(id)
+        };
+
+        let root_module = Self::build_root_module(next_item_id());
         let root_module_id = root_module.id().as_module_id_unchecked();
 
         let mut me = BindgenContext {
             items: Default::default(),
             types: Default::default(),
+            opaque_blob_types: Default::default(),
             type_params: Default::default(),
             modules: Default::default(),
-            next_item_id: ItemId(1),
+            next_item_id: next_item_id(),
             root_module: root_module_id,
             current_module: root_module_id,
             semantic_parents: Default::default(),
@@ -601,7 +613,6 @@ impl BindgenContext {
         };
 
         me.add_item(root_module, None, None);
-
         me
     }
 
@@ -972,7 +983,7 @@ impl BindgenContext {
     /// closure is made.
     fn with_loaned_item<F, T>(&mut self, id: ItemId, f: F) -> T
     where
-        F: (FnOnce(&BindgenContext, &mut Item) -> T)
+        F: FnOnce(&mut BindgenContext, &mut Item) -> T
     {
         let mut item = self.items.remove(&id).unwrap();
 
@@ -1028,6 +1039,35 @@ impl BindgenContext {
                     .as_comp_mut()
                     .unwrap()
                     .deanonymize_fields(ctx);
+            });
+        }
+    }
+
+    fn compute_padding(&mut self) {
+        let _t = self.timer("compute_padding");
+
+        let comp_item_ids: Vec<ItemId> = self.items
+            .iter()
+            .filter_map(|(id, item)| {
+                if let Some(ty) = item.kind().as_type() {
+                    if ty.is_comp() {
+                        return Some(id);
+                    }
+                }
+                None
+            })
+            .cloned()
+            .collect();
+
+        for id in comp_item_ids {
+            self.with_loaned_item(id, |ctx, item| {
+                let ty = item.kind_mut()
+                    .as_type_mut()
+                    .unwrap();
+                let layout = ty.layout(ctx);
+                ty.as_comp_mut()
+                    .unwrap()
+                    .compute_padding(ctx, id.as_type_id_unchecked(), layout);
             });
         }
     }
@@ -1179,13 +1219,18 @@ impl BindgenContext {
         // graph, and their completion means that the IR graph is now frozen.
         self.compute_whitelisted_and_codegen_items();
 
+        // We need to compute vtables and sizedness before we can compute
+        // padding.
+        self.compute_has_vtable();
+        self.compute_sizedness();
+
+        self.compute_padding();
+
         // Make sure to do this after processing replacements, since that messes
         // with the parentage and module children, and we want to assert that it
         // messes with them correctly.
         self.assert_every_item_in_a_module();
 
-        self.compute_has_vtable();
-        self.compute_sizedness();
         self.compute_has_destructor();
         self.find_used_template_parameters();
         self.compute_cannot_derive_debug();
@@ -1439,6 +1484,30 @@ impl BindgenContext {
     /// Get the root module.
     pub fn root_module(&self) -> ModuleId {
         self.root_module
+    }
+
+    /// TODO FITZGEN
+    pub fn get_or_create_opaque_blob_type(&mut self, layout: Layout) -> TypeId {
+        if let Some(id) = self.opaque_blob_types.get(&layout) {
+            return *id;
+        }
+
+        self.create_opaque_blob_type(layout)
+    }
+
+    fn create_opaque_blob_type(&mut self, layout: Layout) -> TypeId {
+        assert!(self.opaque_blob_types.get(&layout).is_none());
+
+        let ty_kind = TypeKind::Opaque;
+        let ty = Type::new(None, Some(layout), ty_kind, false);
+        let item_kind = ItemKind::Type(ty);
+        let id = self.next_item_id();
+        let item = Item::new(id, None, None, self.root_module.into(), item_kind);
+        self.add_item(item, None, None);
+
+        let id = id.as_type_id_unchecked();
+        self.opaque_blob_types.insert(layout, id);
+        id
     }
 
     /// Resolve a type with the given id.

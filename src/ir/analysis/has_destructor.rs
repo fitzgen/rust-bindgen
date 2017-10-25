@@ -119,22 +119,26 @@ impl<'ctx> MonotoneFramework for HasDestructorAnalysis<'ctx> {
                 match info.kind() {
                     CompKind::Union => ConstrainResult::Same,
                     CompKind::Struct => {
-                        let base_or_field_destructor =
-                            info.base_members().iter().any(|base| {
-                                self.have_destructor.contains(&base.ty.into())
-                            }) ||
-                            info.fields().iter().any(|field| {
+                        if info.base_members().iter().any(|base| {
+                            self.have_destructor.contains(&base.ty.into())
+                        }) {
+                            return self.insert(id);
+                        }
+
+                        if info.fields()
+                            .iter()
+                            .filter(|f| !f.is_added_by_bindgen())
+                            .any(|field| {
                                 match *field {
                                     Field::DataMember(ref data) =>
                                         self.have_destructor.contains(&data.ty().into()),
                                     Field::Bitfields(_) => false
                                 }
-                            });
-                        if base_or_field_destructor {
-                            self.insert(id)
-                        } else {
-                            ConstrainResult::Same
-                        }
+                            }) {
+                                return self.insert(id)
+                            }
+
+                        ConstrainResult::Same
                     }
                 }
             }
