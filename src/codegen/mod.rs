@@ -4,6 +4,12 @@ mod error;
 mod helpers;
 pub mod struct_layout;
 
+#[cfg(test)]
+#[allow(warnings)]
+pub(crate) mod bitfield_unit;
+#[cfg(test)]
+mod bitfield_unit_tests;
+
 use self::helpers::attributes;
 use self::struct_layout::StructLayoutTracker;
 
